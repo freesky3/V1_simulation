@@ -1,0 +1,14 @@
+# @package analysis
+
+seed: ${seed}
+num_surrogates: 10000
+center_side_fraction: 0.5
+osi_threshold: 0.4
+random_sample_fraction: 0.5
+louvain:
+  thr_prop: 0.2
+  gamma: 1.0
+  num_runs: 1000
+  consensus_reps: 200
+active_threshold: 1.0e-6
+simulation_id: null

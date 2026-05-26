@@ -1,0 +1,33 @@
+# @package _global_
+
+seed: 42
+job_name: bcm_train
+mode: train
+
+training:
+  enabled: true
+  natural_image:
+    dir: ${paths.natural_image_dir}
+    limit: null
+    seed: null
+    crop_size: 512
+    patches_per_image: 4
+    res: 128
+    normalization: log-zscore
+  bcm:
+    epochs: 1
+    batch_size: 16
+    eta: 1.0e-5
+    theta_beta: 0.01
+    theta_eps: 1.0e-6
+    theta_update_order: pre
+    theta_init: 1.0
+    theta_floor: 1.0e-3
+    w_max: 30.0
+    row_sum_max_scale: 1.05
+    save_every: 100
+    dynamic_steady_state: true
+    steady_state_abs_tol: 1.0e-3
+    steady_state_rel_tol: 1.0e-5
+    steady_state_window: 5
+    steady_state_min_tau: 5.0

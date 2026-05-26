@@ -1,0 +1,6 @@
+# @package paths
+
+data_dir: data
+sample_data_path: data/sample_data.pkl
+natural_image_dir: data/vanhateren_iml
+run_root: runs

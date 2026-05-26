@@ -1,0 +1,20 @@
+# @package solver
+
+backend: jax-rk4
+method: RK4
+
+transfer:
+  sigma_t: 10.0
+  tau_e: 0.02
+  tau_i: 0.01
+  tau_rp: 0.002
+  theta: 20.0
+  v_r: 10.0
+  mu_tab_max: 100.0
+
+jax:
+  prefer_sparse: true
+  dense_max_mb: 128.0
+
+diffrax:
+  solver: tsit5

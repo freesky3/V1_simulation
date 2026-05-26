@@ -1,0 +1,6 @@
+# @package paths
+
+data_dir: /data/v1_simulation
+sample_data_path: /data/v1_simulation/sample_data.pkl
+natural_image_dir: /data/v1_simulation/vanhateren_iml
+run_root: /outputs/v1_simulation/runs

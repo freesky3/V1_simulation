@@ -1,0 +1,11 @@
+defaults:
+  - model: default
+  - solver: scipy
+  - background: none
+  - analysis: default
+  - paths: local
+  - _self_
+
+seed: 42
+mode: simulate
+job_name: v1

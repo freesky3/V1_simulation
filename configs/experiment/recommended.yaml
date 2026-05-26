@@ -1,0 +1,10 @@
+# @package _global_
+
+defaults:
+  - override /model: default
+  - override /solver: scipy
+  - override /background: none
+
+seed: 42
+job_name: recommended
+mode: simulate

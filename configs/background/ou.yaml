@@ -1,0 +1,10 @@
+# @package background
+
+enabled: true
+seed: null
+tau_e: 0.05
+tau_i: 0.05
+mu_e: 0.0
+mu_i: 0.0
+sigma_e: 0.02
+sigma_i: 0.03

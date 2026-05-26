@@ -1,0 +1,22 @@
+# @package _global_
+
+seed: 42
+job_name: smoke
+mode: simulate
+
+model:
+  layers:
+    periodic: true
+    l4:
+      n_side: 8
+      all_tuned: true
+    l23:
+      random_inhibitory: false
+  stimulus:
+    res: 36
+    n_theta: 4
+    visual_gain: 40.0
+
+solver:
+  transfer:
+    mu_tab_max: 2.0
