@@ -24,23 +24,8 @@ connectivity:
     ii: 1.0
     ix: 1.0
   kernel:
-    sigma_narrow: 0.5
-    sigma_broad: 1.0
+    sigma_narrow: 0.075
+    sigma_broad: 0.225
     kappa: 0.45
-
-stimulus:
-  kind: drifting_grating
-  size: 2.0
-  sigma: 0.085
-  gamma: 1.3
-  k: 14.137166941154069
-  psi: 0.0
-  r0: 0.0
-  res: 300
-  l0: 1.0
-  epsilon: 1.0
-  omega: 6.283185307179586
-  visual_gain: 400.0
-  n_theta: 8
 
 trained_network_path: null

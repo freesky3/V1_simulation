@@ -17,7 +17,7 @@ training:
   bcm:
     epochs: 1
     batch_size: 16
-    eta: 1.0e-5
+    eta: 3.0e-5
     theta_beta: 0.01
     theta_eps: 1.0e-6
     theta_update_order: pre

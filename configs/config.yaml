@@ -1,9 +1,12 @@
 defaults:
-  - model: default
-  - solver: scipy
-  - background: none
   - analysis: default
+  - background: none
+  - model: default
   - paths: local
+  - solver: scipy_rk4
+  - stimulus: natural_image
+  - sweep: local_grid
+  - transfer: siegert
   - _self_
 
 seed: 42
