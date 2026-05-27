@@ -1,13 +1,156 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 import numpy as np
+from numpy.typing import ArrayLike
 from numpy.typing import NDArray
 
 from v1_simulation.stimuli.background import BackgroundTrace, RK4BackgroundSamples, validate_time_grid
 
+if TYPE_CHECKING:
+    from v1_simulation.config.schema import SolverConfig, TrainingBCMConfig
+    from v1_simulation.network.state import NetworkState, PopulationLayout
+
 FloatArray = NDArray[np.float64]
+BackendName = Literal["scipy", "jax-rk4", "diffrax"]
+ScipyMethod = Literal["RK4", "RK45", "DOP853", "BDF", "Radau", "LSODA"]
+
+
+class ExternalDrive(Protocol):
+    """Continuous-time external drive for L4 source neurons.
+
+    Implementations return either ``(n_x,)`` for a single batch item or
+    ``(n_x, n_batch)`` for batched simulation.
+    """
+
+    def __call__(self, t: float) -> ArrayLike:
+        ...
+
+
+TransferFunction = Callable[[ArrayLike], ArrayLike]
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkLayout:
+    """Index layout consumed by Wilson-Cowan solvers.
+
+    ``idx_exc`` and ``idx_inh`` index dynamic L2/3 rate rows. ``idx_ext`` indexes
+    the external L4 source columns in the connectivity/weight matrix.
+    """
+
+    idx_exc: NDArray[np.int64]
+    idx_inh: NDArray[np.int64]
+    idx_ext: NDArray[np.int64]
+
+    def __post_init__(self) -> None:
+        idx_exc = _index_array(self.idx_exc, "idx_exc")
+        idx_inh = _index_array(self.idx_inh, "idx_inh")
+        idx_ext = _index_array(self.idx_ext, "idx_ext")
+
+        if np.intersect1d(idx_exc, idx_inh).size:
+            raise ValueError("idx_exc and idx_inh must be disjoint.")
+
+        n_rates = idx_exc.size + idx_inh.size
+        if idx_exc.size and int(idx_exc.max()) >= n_rates:
+            raise ValueError("idx_exc contains values outside the dynamic L2/3 rate range.")
+        if idx_inh.size and int(idx_inh.max()) >= n_rates:
+            raise ValueError("idx_inh contains values outside the dynamic L2/3 rate range.")
+
+        object.__setattr__(self, "idx_exc", idx_exc)
+        object.__setattr__(self, "idx_inh", idx_inh)
+        object.__setattr__(self, "idx_ext", idx_ext)
+
+    @classmethod
+    def from_population_layout(cls, layout: PopulationLayout) -> "NetworkLayout":
+        return cls(idx_exc=layout.idx_E, idx_inh=layout.idx_I, idx_ext=layout.idx_X)
+
+    @classmethod
+    def from_network_state(cls, network: NetworkState) -> "NetworkLayout":
+        return cls.from_population_layout(network.layout)
+
+    @property
+    def n_exc(self) -> int:
+        return int(self.idx_exc.size)
+
+    @property
+    def n_inh(self) -> int:
+        return int(self.idx_inh.size)
+
+    @property
+    def n_ext(self) -> int:
+        return int(self.idx_ext.size)
+
+    @property
+    def n_rates(self) -> int:
+        return self.n_exc + self.n_inh
+
+
+@dataclass(frozen=True, slots=True)
+class SolverOptions:
+    """Runtime options derived from ``solver`` YAML plus call-site choices."""
+
+    backend: BackendName = "scipy"
+    method: str = "RK4"
+    store_trajectory: bool = True
+    stop_at_steady_state: bool = False
+    steady_state_abs_tol: float = 1.0e-3
+    steady_state_rel_tol: float = 1.0e-5
+    steady_state_window: int = 5
+    steady_state_min_time: float | None = None
+    jax_prefer_sparse: bool = True
+    jax_dense_max_mb: float = 128.0
+    diffrax_solver: str = "tsit5"
+
+    @classmethod
+    def from_config(
+        cls,
+        solver: SolverConfig,
+        *,
+        training_bcm: TrainingBCMConfig | None = None,
+        store_trajectory: bool = True,
+        stop_at_steady_state: bool | None = None,
+    ) -> "SolverOptions":
+        """Creates SolverOptions derived from YAML solver config and optional training specs.
+
+        Args:
+            solver: The parsed SolverConfig configuration.
+            training_bcm: Optional TrainingBCMConfig containing steady state parameters.
+            store_trajectory: Whether to store and return the full time trajectory.
+            stop_at_steady_state: Optional override for early steady-state stopping.
+
+        Returns:
+            A resolved SolverOptions instance.
+        """
+        should_stop = False if stop_at_steady_state is None else bool(stop_at_steady_state)
+        min_time = None
+        abs_tol = 1.0e-3
+        rel_tol = 1.0e-5
+        window = 5
+
+        if training_bcm is not None:
+            should_stop = bool(training_bcm.dynamic_steady_state) if stop_at_steady_state is None else should_stop
+            abs_tol = float(training_bcm.steady_state_abs_tol)
+            rel_tol = float(training_bcm.steady_state_rel_tol)
+            window = int(training_bcm.steady_state_window)
+            min_time = None
+
+        jax_cfg = solver.jax
+        diffrax_cfg = solver.diffrax
+        return cls(
+            backend=solver.backend,  # type: ignore[arg-type]
+            method=str(solver.method),
+            store_trajectory=bool(store_trajectory),
+            stop_at_steady_state=should_stop,
+            steady_state_abs_tol=abs_tol,
+            steady_state_rel_tol=rel_tol,
+            steady_state_window=window,
+            steady_state_min_time=min_time,
+            jax_prefer_sparse=True if jax_cfg is None else bool(jax_cfg.prefer_sparse),
+            jax_dense_max_mb=128.0 if jax_cfg is None else float(jax_cfg.dense_max_mb),
+            diffrax_solver="tsit5" if diffrax_cfg is None else str(diffrax_cfg.solver),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +182,36 @@ class BatchODEResult:
     steady_state_reached: bool = False
     steady_state_index: int | None = None
     steady_state_start_index: int | None = None
+
+
+def validate_solver_options(options: SolverOptions) -> None:
+    """Validates that method and backend selections are compatible.
+
+    Args:
+        options: The solver options to validate.
+
+    Raises:
+        ValueError: If the combination of backend and method is unsupported.
+    """
+    if options.backend == "scipy":
+        if options.method not in {"RK4", "RK45", "DOP853", "BDF", "Radau", "LSODA"}:
+            raise ValueError(
+                "solver.method must be one of RK4, RK45, DOP853, BDF, Radau, or LSODA "
+                "when solver.backend is 'scipy'."
+            )
+        return
+
+    if options.backend == "jax-rk4":
+        if options.method != "RK4":
+            raise ValueError("solver.backend 'jax-rk4' requires solver.method 'RK4'.")
+        return
+
+    if options.backend == "diffrax":
+        if options.method != "adaptive":
+            raise ValueError("solver.backend 'diffrax' requires solver.method 'adaptive'.")
+        return
+
+    raise ValueError(f"Unknown solver backend: {options.backend!r}")
 
 
 def validate_background_trace(
@@ -106,3 +279,164 @@ def prepare_rk4_background(
         return None
     return trace.rk4_samples()
 
+
+def summary_start_index(n_time: int, steady_state_start_index: int | None = None) -> int:
+    """Returns the first time index used for output summary statistics.
+
+    Args:
+        n_time: Total number of time steps.
+        steady_state_start_index: Optional index where steady state started. If None,
+            defaults to the last 1/3 of the trajectory.
+
+    Returns:
+        The 0-indexed start time index for summarizing.
+    """
+
+    if n_time <= 0:
+        raise ValueError("n_time must be positive.")
+    if steady_state_start_index is not None:
+        return max(0, min(int(steady_state_start_index), n_time - 1))
+    return int(n_time * 2 / 3)
+
+
+def pack_trajectory_result(
+    trajectory: FloatArray,
+    *,
+    layout: NetworkLayout,
+    time: FloatArray,
+    store_trajectory: bool,
+    steady_state_reached: bool = False,
+    steady_state_index: int | None = None,
+    steady_state_start_index: int | None = None,
+) -> BatchODEResult:
+    """Packs a full dynamic trajectory into the public result shape.
+
+    Args:
+        trajectory: Array with shape ``(n_time, n_rates, n_batch)``.
+        layout: The network indexing layout.
+        time: Array of time points.
+        store_trajectory: Whether to store and return the full trajectories.
+        steady_state_reached: Whether early steady-state stopping was triggered.
+        steady_state_index: Time index where steady state was reached.
+        steady_state_start_index: Time index where steady state detection window started.
+
+    Returns:
+        A filled BatchODEResult.
+    """
+
+    y_t = np.asarray(trajectory, dtype=np.float64)
+    time = validate_time_grid(time, copy=True)
+    if y_t.ndim != 3:
+        raise ValueError("trajectory must have shape (n_time, n_rates, n_batch).")
+    if y_t.shape[0] != time.size:
+        raise ValueError("trajectory time dimension must match time.")
+    if y_t.shape[1] != layout.n_rates:
+        raise ValueError("trajectory rate dimension must match layout.n_rates.")
+
+    exc_t = np.transpose(y_t[:, layout.idx_exc, :], (0, 2, 1))
+    inh_t = np.transpose(y_t[:, layout.idx_inh, :], (0, 2, 1))
+    start = summary_start_index(time.size, steady_state_start_index)
+
+    exc_tail = exc_t[start:]
+    inh_tail = inh_t[start:]
+    exc = np.mean(exc_tail, axis=0)
+    inh = np.mean(inh_tail, axis=0)
+    exc_convergence = np.mean(np.std(exc_tail, axis=0), axis=1)
+    inh_convergence = np.mean(np.std(inh_tail, axis=0), axis=1)
+
+    return BatchODEResult(
+        exc=exc,
+        inh=inh,
+        exc_trajectory=exc_t if store_trajectory else None,
+        inh_trajectory=inh_t if store_trajectory else None,
+        time=time,
+        exc_convergence=exc_convergence,
+        inh_convergence=inh_convergence,
+        steady_state_reached=steady_state_reached,
+        steady_state_index=steady_state_index,
+        steady_state_start_index=steady_state_start_index,
+    )
+
+
+def pack_summary_result(
+    *,
+    mean_rates: FloatArray,
+    std_rates: FloatArray,
+    layout: NetworkLayout,
+    time: FloatArray,
+    steady_state_reached: bool = False,
+    steady_state_index: int | None = None,
+    steady_state_start_index: int | None = None,
+) -> BatchODEResult:
+    """Packs streaming summary statistics into the public result shape.
+
+    Args:
+        mean_rates: Mean firing rates with shape (n_rates, n_batch).
+        std_rates: Standard deviation of rates with shape (n_rates, n_batch).
+        layout: The network indexing layout.
+        time: Solver time grid array.
+        steady_state_reached: Whether early steady-state stopping was triggered.
+        steady_state_index: Time index where steady state was reached.
+        steady_state_start_index: Time index where steady state detection window started.
+
+    Returns:
+        A filled BatchODEResult with empty trajectory fields.
+    """
+
+    mean = np.asarray(mean_rates, dtype=np.float64)
+    std = np.asarray(std_rates, dtype=np.float64)
+    if mean.shape != std.shape:
+        raise ValueError("mean_rates and std_rates must have the same shape.")
+    if mean.ndim != 2 or mean.shape[0] != layout.n_rates:
+        raise ValueError("summary arrays must have shape (n_rates, n_batch).")
+
+    return BatchODEResult(
+        exc=np.transpose(mean[layout.idx_exc, :]),
+        inh=np.transpose(mean[layout.idx_inh, :]),
+        exc_trajectory=None,
+        inh_trajectory=None,
+        time=validate_time_grid(time, copy=True),
+        exc_convergence=np.mean(std[layout.idx_exc, :], axis=0),
+        inh_convergence=np.mean(std[layout.idx_inh, :], axis=0),
+        steady_state_reached=steady_state_reached,
+        steady_state_index=steady_state_index,
+        steady_state_start_index=steady_state_start_index,
+    )
+
+
+def validate_external_drive_value(
+    value: ArrayLike,
+    *,
+    n_ext: int,
+    n_batch: int,
+) -> FloatArray:
+    """Validates the shape and values of the external drive function output.
+
+    Args:
+        value: The value returned by the external drive function.
+        n_ext: Expected number of external inputs (L4 neurons).
+        n_batch: Expected number of batch items (stimulus orientations).
+
+    Returns:
+        A float array of shape (n_ext, n_batch).
+    """
+    drive = np.asarray(value, dtype=np.float64)
+    if drive.ndim == 1:
+        if n_batch != 1:
+            raise ValueError(
+                f"external drive returned shape {drive.shape}; expected ({n_ext}, {n_batch})."
+            )
+        drive = drive[:, np.newaxis]
+    if drive.shape != (n_ext, n_batch):
+        raise ValueError(f"external drive shape {drive.shape} != ({n_ext}, {n_batch}).")
+    return drive
+
+
+def _index_array(values: ArrayLike, name: str) -> NDArray[np.int64]:
+    arr = np.asarray(values, dtype=np.int64).reshape(-1).copy()
+    if arr.size and np.any(arr < 0):
+        raise ValueError(f"{name} must contain non-negative indices.")
+    if np.unique(arr).size != arr.size:
+        raise ValueError(f"{name} must not contain duplicate indices.")
+    arr.setflags(write=False)
+    return arr

@@ -1,6 +1,6 @@
 import math
 
-from v1_simulation.config.schema import RootConfig
+from v1_simulation.config.schema import RootConfig, TransferConfig
 
 
 def _require_bool(value: bool, path: str) -> None:
@@ -22,6 +22,41 @@ def _finite_float(value: float, path: str) -> float:
     if not math.isfinite(value):
         raise ValueError(f"{path} must be finite, got {value}")
     return value
+
+
+def _validate_transfer_config(trans: TransferConfig, path: str) -> None:
+    if trans.kind != "siegert":
+        raise ValueError(f"{path}.kind must be 'siegert', got {trans.kind!r}")
+    if trans.sigma_t <= 0.0:
+        raise ValueError(f"{path}.sigma_t must be positive, got {trans.sigma_t}")
+    if trans.tau_e <= 0.0 or trans.tau_i <= 0.0 or trans.tau_rp <= 0.0:
+        raise ValueError(f"{path} time constants (tau_e, tau_i, tau_rp) must be positive")
+    if trans.theta <= 0.0:
+        raise ValueError(f"{path} threshold theta must be positive, got {trans.theta}")
+    if trans.v_r <= 0.0:
+        raise ValueError(f"{path} reset potential v_r must be positive, got {trans.v_r}")
+    if trans.mu_tab_max <= 0.0:
+        raise ValueError(f"{path} mu_tab_max must be positive, got {trans.mu_tab_max}")
+
+
+def _validate_solver_method(backend: str, method: str) -> None:
+    if backend == "scipy":
+        if method not in {"RK4", "RK45", "DOP853", "BDF", "Radau", "LSODA"}:
+            raise ValueError(
+                "solver.method must be one of RK4, RK45, DOP853, BDF, Radau, or LSODA "
+                "when solver.backend is 'scipy'."
+            )
+        return
+    if backend == "jax-rk4":
+        if method != "RK4":
+            raise ValueError("solver.backend 'jax-rk4' requires solver.method 'RK4'.")
+        return
+    if backend == "diffrax":
+        if method != "adaptive":
+            raise ValueError("solver.backend 'diffrax' requires solver.method 'adaptive'.")
+        return
+    raise ValueError(f"solver.backend must be 'scipy', 'jax-rk4', or 'diffrax', got '{backend}'")
+
 
 def validate_config(cfg: RootConfig) -> None:
     """Validate all fields in a RootConfig instance for physical correctness and constraints.
@@ -136,22 +171,18 @@ def validate_config(cfg: RootConfig) -> None:
         raise ValueError(f"model.connectivity.kernel.kappa must be in [0.0, 1.0], got {conn.kernel.kappa}")
 
     # 5. Transfer Config
-    trans = cfg.transfer
-    if trans.sigma_t <= 0.0:
-        raise ValueError(f"transfer.sigma_t must be positive, got {trans.sigma_t}")
-    if trans.tau_e <= 0.0 or trans.tau_i <= 0.0 or trans.tau_rp <= 0.0:
-        raise ValueError(f"transfer time constants (tau_e, tau_i, tau_rp) must be positive")
-    if trans.theta <= 0.0:
-        raise ValueError(f"transfer threshold theta must be positive, got {trans.theta}")
-    if trans.v_r <= 0.0:
-        raise ValueError(f"transfer reset potential v_r must be positive, got {trans.v_r}")
-    if trans.mu_tab_max <= 0.0:
-        raise ValueError(f"transfer mu_tab_max must be positive, got {trans.mu_tab_max}")
+    _validate_transfer_config(cfg.transfer, "transfer")
 
     # 6. Solver Config
     sol = cfg.solver
     if sol.backend not in {"scipy", "jax-rk4", "diffrax"}:
         raise ValueError(f"solver.backend must be 'scipy', 'jax-rk4', or 'diffrax', got '{sol.backend}'")
+    _validate_solver_method(sol.backend, sol.method)
+    _validate_transfer_config(sol.transfer, "solver.transfer")
+    if sol.jax is not None and sol.jax.dense_max_mb <= 0.0:
+        raise ValueError(f"solver.jax.dense_max_mb must be positive, got {sol.jax.dense_max_mb}")
+    if sol.diffrax is not None and sol.diffrax.solver not in {"tsit5"}:
+        raise ValueError(f"solver.diffrax.solver must be 'tsit5', got {sol.diffrax.solver!r}")
 
     # 7. Stimulus Config
     stim = cfg.stimulus
