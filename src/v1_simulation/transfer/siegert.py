@@ -179,8 +179,13 @@ def integrate_siegert_kernel(
         return out
 
     bounds = np.concatenate([lower_arr[finite], upper_arr[finite]])
-    grid_min = float(np.min(bounds))
-    grid_max = float(np.max(bounds))
+    valid_bounds = bounds[~np.isnan(bounds)]
+    if valid_bounds.size == 0:
+        out[finite] = np.nan
+        return out
+
+    grid_min = float(np.min(valid_bounds))
+    grid_max = float(np.max(valid_bounds))
 
     if grid_min == grid_max:
         out[finite] = 0.0

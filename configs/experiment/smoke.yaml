@@ -13,7 +13,7 @@ model:
     l23:
       random_inhibitory: false
   stimulus:
-    res: 36
+    resolution: 36
     n_theta: 4
     visual_gain: 40.0
 

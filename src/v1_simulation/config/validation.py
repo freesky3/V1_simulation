@@ -111,22 +111,22 @@ def validate_config(cfg: RootConfig) -> None:
 
     # 7. Stimulus Config
     stim = cfg.stimulus
-    if stim.size <= 0.0:
-        raise ValueError(f"stimulus.size must be positive, got {stim.size}")
+    if stim.stimulus_size <= 0.0:
+        raise ValueError(f"stimulus.stimulus_size must be positive, got {stim.stimulus_size}")
     if stim.sigma <= 0.0:
         raise ValueError(f"stimulus.sigma must be positive, got {stim.sigma}")
     if stim.gamma <= 0.0:
         raise ValueError(f"stimulus.gamma must be positive, got {stim.gamma}")
-    if stim.k <= 0.0:
-        raise ValueError(f"stimulus.k must be positive, got {stim.k}")
-    if stim.res <= 0:
-        raise ValueError(f"stimulus.res must be positive, got {stim.res}")
-    if stim.l0 <= 0.0:
-        raise ValueError(f"stimulus.l0 must be positive, got {stim.l0}")
-    if not (0.0 <= stim.epsilon <= 1.0):
-        raise ValueError(f"stimulus.epsilon must be in [0.0, 1.0], got {stim.epsilon}")
-    if stim.omega < 0.0:
-        raise ValueError(f"stimulus.omega must be non-negative, got {stim.omega}")
+    if stim.spatial_frequency <= 0.0:
+        raise ValueError(f"stimulus.spatial_frequency must be positive, got {stim.spatial_frequency}")
+    if stim.resolution <= 0:
+        raise ValueError(f"stimulus.resolution must be positive, got {stim.resolution}")
+    if stim.luminance <= 0.0:
+        raise ValueError(f"stimulus.luminance must be positive, got {stim.luminance}")
+    if not (0.0 <= stim.contrast <= 1.0):
+        raise ValueError(f"stimulus.contrast must be in [0.0, 1.0], got {stim.contrast}")
+    if stim.temporal_frequency < 0.0:
+        raise ValueError(f"stimulus.temporal_frequency must be non-negative, got {stim.temporal_frequency}")
     if stim.visual_gain <= 0.0:
         raise ValueError(f"stimulus.visual_gain must be positive, got {stim.visual_gain}")
     if stim.n_theta <= 0:

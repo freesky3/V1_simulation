@@ -46,27 +46,89 @@ class BackgroundConfig:
 @dataclass
 class StimulusConfig:
     kind: str = "drifting_grating"
-    size: float = 2.0
+    stimulus_size: float = 2.0
     sigma: float = 0.085
     gamma: float = 1.0
-    k: float = 14.137166941154069
-    psi: float = 0.0
-    r0: float = 0.0
-    res: int = 300
-    l0: float = 1.0
-    epsilon: float = 1.0
-    omega: float = 6.283185307179586
+    spatial_frequency: float = 14.137166941154069
+    phase: float = 0.0
+    baseline_rate: float = 0.0
+    resolution: int = 300
+    luminance: float = 1.0
+    contrast: float = 1.0
+    temporal_frequency: float = 6.283185307179586
     visual_gain: float = 400.0
     n_theta: int = 8
 
+    # Alias to support self.cfg.receptive_field references in stimuli
     @property
-    def stimulus_size(self) -> float:
-        """Alias for size for backward compatibility."""
-        return self.size
+    def receptive_field(self) -> "StimulusConfig":
+        """Alias to support self.cfg.receptive_field legacy references."""
+        return self
 
-    @stimulus_size.setter
-    def stimulus_size(self, val: float):
-        self.size = val
+    # Backward compatibility properties
+    @property
+    def size(self) -> float:
+        return self.stimulus_size
+
+    @size.setter
+    def size(self, val: float):
+        self.stimulus_size = val
+
+    @property
+    def k(self) -> float:
+        return self.spatial_frequency
+
+    @k.setter
+    def k(self, val: float):
+        self.spatial_frequency = val
+
+    @property
+    def psi(self) -> float:
+        return self.phase
+
+    @psi.setter
+    def psi(self, val: float):
+        self.phase = val
+
+    @property
+    def r0(self) -> float:
+        return self.baseline_rate
+
+    @r0.setter
+    def r0(self, val: float):
+        self.baseline_rate = val
+
+    @property
+    def res(self) -> int:
+        return self.resolution
+
+    @res.setter
+    def res(self, val: int):
+        self.resolution = val
+
+    @property
+    def l0(self) -> float:
+        return self.luminance
+
+    @l0.setter
+    def l0(self, val: float):
+        self.luminance = val
+
+    @property
+    def epsilon(self) -> float:
+        return self.contrast
+
+    @epsilon.setter
+    def epsilon(self, val: float):
+        self.contrast = val
+
+    @property
+    def omega(self) -> float:
+        return self.temporal_frequency
+
+    @omega.setter
+    def omega(self, val: float):
+        self.temporal_frequency = val
 
 # ==========================================
 # 4. Model Configuration
@@ -78,6 +140,12 @@ class L4Config:
     region_size: float = 2.0
     z_pos: float = 0.0
     all_tuned: bool = True
+    N_theta: int = 8
+
+    @property
+    def l4(self) -> "L4Config":
+        """Self-reference to support self.cfg.l4.all_tuned syntax."""
+        return self
 
 @dataclass
 class L23Config:

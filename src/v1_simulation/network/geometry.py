@@ -185,6 +185,16 @@ class L4(SheetGeometry):
 
         p_tuned = float(self.exp_data.pT_X)
         return self._bounded_count(round(self.N * p_tuned), self.N, "NT_X")
+    
+    @property
+    def is_tuned(self):
+        """Boolean array indicating which neurons are tuned."""
+        return self.tunings == "T"
+    
+    @property
+    def preferred_orientations(self):
+        """Array of preferred orientation angles (in radians) for each neuron."""
+        return np.nan_to_num(self.pref_dirs, nan=0.0)
 
     def _set_neurons(self):
         """Sets neuron types (tuned vs untuned) and their preferred orientations."""

@@ -1,15 +1,15 @@
 # @package stimulus
 
 kind: drifting_grating
-size: 2.0
+stimulus_size: 2.0
 sigma: 0.085
 gamma: 1.0
-k: 14.137166941154069
-psi: 0.0
-r0: 0.0
-res: 300
-l0: 1.0
-epsilon: 1.0
-omega: 6.283185307179586
+spatial_frequency: 14.137166941154069
+phase: 0.0
+baseline_rate: 0.0
+resolution: 300
+luminance: 1.0
+contrast: 1.0
+temporal_frequency: 6.283185307179586
 visual_gain: 400.0
 n_theta: 8
