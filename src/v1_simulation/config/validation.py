@@ -1,0 +1,166 @@
+from v1_simulation.config.schema import RootConfig
+
+def validate_config(cfg: RootConfig) -> None:
+    """Validate all fields in a RootConfig instance for physical correctness and constraints.
+    
+    Checks value ranges, dependencies, and typings for numerical settings of the model.
+    
+    Raises:
+        ValueError: If any numeric values violate physical/mathematical bounds.
+        TypeError: If any values have incorrect types.
+    """
+    # 1. Seed & Mode
+    if cfg.seed < 0:
+        raise ValueError(f"Global seed must be non-negative, got {cfg.seed}")
+    if cfg.mode not in {"simulate", "train"}:
+        raise ValueError(f"Global mode must be 'simulate' or 'train', got '{cfg.mode}'")
+
+    # 2. Analysis Config
+    analysis = cfg.analysis
+    if analysis.num_surrogates <= 0:
+        raise ValueError(f"analysis.num_surrogates must be positive, got {analysis.num_surrogates}")
+    if not (0.0 <= analysis.center_side_fraction <= 1.0):
+        raise ValueError(f"analysis.center_side_fraction must be in [0.0, 1.0], got {analysis.center_side_fraction}")
+    if not (0.0 <= analysis.osi_threshold <= 1.0):
+        raise ValueError(f"analysis.osi_threshold must be in [0.0, 1.0], got {analysis.osi_threshold}")
+    if not (0.0 <= analysis.random_sample_fraction <= 1.0):
+        raise ValueError(f"analysis.random_sample_fraction must be in [0.0, 1.0], got {analysis.random_sample_fraction}")
+    if analysis.active_threshold <= 0.0:
+        raise ValueError(f"analysis.active_threshold must be positive, got {analysis.active_threshold}")
+    
+    louvain = analysis.louvain
+    if not (0.0 <= louvain.thr_prop <= 1.0):
+        raise ValueError(f"analysis.louvain.thr_prop must be in [0.0, 1.0], got {louvain.thr_prop}")
+    if louvain.gamma <= 0.0:
+        raise ValueError(f"analysis.louvain.gamma must be positive, got {louvain.gamma}")
+    if louvain.num_runs <= 0:
+        raise ValueError(f"analysis.louvain.num_runs must be positive, got {louvain.num_runs}")
+    if louvain.consensus_reps <= 0:
+        raise ValueError(f"analysis.louvain.consensus_reps must be positive, got {louvain.consensus_reps}")
+
+    # 3. Background Config
+    bg = cfg.background
+    if bg.enabled:
+        if bg.tau_e <= 0.0 or bg.tau_i <= 0.0:
+            raise ValueError(f"Background time constants (tau_e, tau_i) must be positive, got tau_e={bg.tau_e}, tau_i={bg.tau_i}")
+        if bg.sigma_e < 0.0 or bg.sigma_i < 0.0:
+            raise ValueError(f"Background noise standard deviations (sigma_e, sigma_i) must be non-negative, got sigma_e={bg.sigma_e}, sigma_i={bg.sigma_i}")
+
+    # 4. Model Config
+    model = cfg.model
+    # Layers
+    layers = model.layers
+    if layers.l4.n_side <= 0:
+        raise ValueError(f"model.layers.l4.n_side must be positive, got {layers.l4.n_side}")
+    if layers.l4.region_size <= 0.0:
+        raise ValueError(f"model.layers.l4.region_size must be positive, got {layers.l4.region_size}")
+    if layers.l23.region_size <= 0.0:
+        raise ValueError(f"model.layers.l23.region_size must be positive, got {layers.l23.region_size}")
+    if layers.periodic:
+        if abs(layers.l4.region_size - layers.l23.region_size) > 1e-7:
+            raise ValueError(
+                f"Periodic cross-layer simulations require matching region_size between L4 and L23, "
+                f"got L4 region_size={layers.l4.region_size} and L23 region_size={layers.l23.region_size}"
+            )
+    
+    # Connectivity
+    conn = model.connectivity
+    if not (0.0 <= conn.p_ee <= 1.0):
+        raise ValueError(f"model.connectivity.p_ee must be in [0.0, 1.0], got {conn.p_ee}")
+    if conn.j <= 0.0:
+        raise ValueError(f"model.connectivity.j (coupling weight scale) must be positive, got {conn.j}")
+    if conn.g <= 0.0:
+        raise ValueError(f"model.connectivity.g (inhibition-to-excitation ratio) must be positive, got {conn.g}")
+    
+    # Scales
+    for scale_name in ["ee", "ei", "ex", "ie", "ii", "ix"]:
+        val = getattr(conn.scales, scale_name)
+        if val < 0.0:
+            raise ValueError(f"model.connectivity.scales.{scale_name} must be non-negative, got {val}")
+
+    # Kernel
+    if conn.kernel.sigma_narrow <= 0.0:
+        raise ValueError(f"model.connectivity.kernel.sigma_narrow must be positive, got {conn.kernel.sigma_narrow}")
+    if conn.kernel.sigma_broad <= 0.0:
+        raise ValueError(f"model.connectivity.kernel.sigma_broad must be positive, got {conn.kernel.sigma_broad}")
+    if conn.kernel.sigma_narrow >= conn.kernel.sigma_broad:
+        raise ValueError(
+            f"Connectivity kernel sigma_narrow must be smaller than sigma_broad, "
+            f"got sigma_narrow={conn.kernel.sigma_narrow}, sigma_broad={conn.kernel.sigma_broad}"
+        )
+    if conn.kernel.kappa < 0.0:
+        raise ValueError(f"model.connectivity.kernel.kappa must be non-negative, got {conn.kernel.kappa}")
+
+    # 5. Transfer Config
+    trans = cfg.transfer
+    if trans.sigma_t <= 0.0:
+        raise ValueError(f"transfer.sigma_t must be positive, got {trans.sigma_t}")
+    if trans.tau_e <= 0.0 or trans.tau_i <= 0.0 or trans.tau_rp <= 0.0:
+        raise ValueError(f"transfer time constants (tau_e, tau_i, tau_rp) must be positive")
+    if trans.theta <= 0.0:
+        raise ValueError(f"transfer threshold theta must be positive, got {trans.theta}")
+    if trans.v_r <= 0.0:
+        raise ValueError(f"transfer reset potential v_r must be positive, got {trans.v_r}")
+    if trans.mu_tab_max <= 0.0:
+        raise ValueError(f"transfer mu_tab_max must be positive, got {trans.mu_tab_max}")
+
+    # 6. Solver Config
+    sol = cfg.solver
+    if sol.backend not in {"scipy", "jax-rk4", "diffrax"}:
+        raise ValueError(f"solver.backend must be 'scipy', 'jax-rk4', or 'diffrax', got '{sol.backend}'")
+
+    # 7. Stimulus Config
+    stim = cfg.stimulus
+    if stim.size <= 0.0:
+        raise ValueError(f"stimulus.size must be positive, got {stim.size}")
+    if stim.sigma <= 0.0:
+        raise ValueError(f"stimulus.sigma must be positive, got {stim.sigma}")
+    if stim.gamma <= 0.0:
+        raise ValueError(f"stimulus.gamma must be positive, got {stim.gamma}")
+    if stim.k <= 0.0:
+        raise ValueError(f"stimulus.k must be positive, got {stim.k}")
+    if stim.res <= 0:
+        raise ValueError(f"stimulus.res must be positive, got {stim.res}")
+    if stim.l0 <= 0.0:
+        raise ValueError(f"stimulus.l0 must be positive, got {stim.l0}")
+    if not (0.0 <= stim.epsilon <= 1.0):
+        raise ValueError(f"stimulus.epsilon must be in [0.0, 1.0], got {stim.epsilon}")
+    if stim.omega < 0.0:
+        raise ValueError(f"stimulus.omega must be non-negative, got {stim.omega}")
+    if stim.visual_gain <= 0.0:
+        raise ValueError(f"stimulus.visual_gain must be positive, got {stim.visual_gain}")
+    if stim.n_theta <= 0:
+        raise ValueError(f"stimulus.n_theta must be positive, got {stim.n_theta}")
+
+    # 8. Training Config
+    train = cfg.training
+    if train.enabled:
+        img = train.natural_image
+        if img.crop_size <= 0:
+            raise ValueError(f"training.natural_image.crop_size must be positive, got {img.crop_size}")
+        if img.patches_per_image <= 0:
+            raise ValueError(f"training.natural_image.patches_per_image must be positive, got {img.patches_per_image}")
+        if img.res <= 0:
+            raise ValueError(f"training.natural_image.res must be positive, got {img.res}")
+        
+        bcm = train.bcm
+        if bcm.epochs <= 0:
+            raise ValueError(f"training.bcm.epochs must be positive, got {bcm.epochs}")
+        if bcm.batch_size <= 0:
+            raise ValueError(f"training.bcm.batch_size must be positive, got {bcm.batch_size}")
+        if bcm.eta <= 0.0:
+            raise ValueError(f"training.bcm.eta must be positive, got {bcm.eta}")
+        if not (0.0 < bcm.theta_beta < 1.0):
+            raise ValueError(f"training.bcm.theta_beta must be in (0.0, 1.0), got {bcm.theta_beta}")
+        if bcm.theta_eps <= 0.0:
+            raise ValueError(f"training.bcm.theta_eps must be positive, got {bcm.theta_eps}")
+        if bcm.theta_init <= 0.0:
+            raise ValueError(f"training.bcm.theta_init must be positive, got {bcm.theta_init}")
+        if bcm.theta_floor <= 0.0:
+            raise ValueError(f"training.bcm.theta_floor must be positive, got {bcm.theta_floor}")
+        if bcm.w_max <= 0.0:
+            raise ValueError(f"training.bcm.w_max must be positive, got {bcm.w_max}")
+        if bcm.row_sum_max_scale <= 0.0:
+            raise ValueError(f"training.bcm.row_sum_max_scale must be positive, got {bcm.row_sum_max_scale}")
+        if bcm.save_every <= 0:
+            raise ValueError(f"training.bcm.save_every must be positive, got {bcm.save_every}")
