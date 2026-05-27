@@ -111,16 +111,18 @@ def validate_config(cfg: RootConfig) -> None:
 
     # 7. Stimulus Config
     stim = cfg.stimulus
+    if stim.kind not in {"drifting_grating", "natural_image"}:
+        raise ValueError(f"stimulus.kind must be 'drifting_grating' or 'natural_image', got '{stim.kind}'")
     if stim.stimulus_size <= 0.0:
         raise ValueError(f"stimulus.stimulus_size must be positive, got {stim.stimulus_size}")
-    if stim.sigma <= 0.0:
-        raise ValueError(f"stimulus.sigma must be positive, got {stim.sigma}")
-    if stim.gamma <= 0.0:
-        raise ValueError(f"stimulus.gamma must be positive, got {stim.gamma}")
-    if stim.spatial_frequency <= 0.0:
-        raise ValueError(f"stimulus.spatial_frequency must be positive, got {stim.spatial_frequency}")
-    if stim.resolution <= 0:
-        raise ValueError(f"stimulus.resolution must be positive, got {stim.resolution}")
+    if stim.gabor.sigma <= 0.0:
+        raise ValueError(f"stimulus.gabor.sigma must be positive, got {stim.gabor.sigma}")
+    if stim.gabor.gamma <= 0.0:
+        raise ValueError(f"stimulus.gabor.gamma must be positive, got {stim.gabor.gamma}")
+    if stim.gabor.spatial_frequency <= 0.0:
+        raise ValueError(f"stimulus.gabor.spatial_frequency must be positive, got {stim.gabor.spatial_frequency}")
+    if stim.resolution <= 1:
+        raise ValueError(f"stimulus.resolution must be greater than 1, got {stim.resolution}")
     if stim.luminance <= 0.0:
         raise ValueError(f"stimulus.luminance must be positive, got {stim.luminance}")
     if not (0.0 <= stim.contrast <= 1.0):
@@ -136,12 +138,24 @@ def validate_config(cfg: RootConfig) -> None:
     train = cfg.training
     if train.enabled:
         img = train.natural_image
-        if img.crop_size <= 0:
+        if img.dir is None:
+            raise ValueError("training.natural_image.dir must be set when training is enabled")
+        if img.limit is not None and img.limit < 0:
+            raise ValueError(f"training.natural_image.limit must be non-negative, got {img.limit}")
+        if img.crop_size is not None and img.crop_size <= 0:
             raise ValueError(f"training.natural_image.crop_size must be positive, got {img.crop_size}")
         if img.patches_per_image <= 0:
             raise ValueError(f"training.natural_image.patches_per_image must be positive, got {img.patches_per_image}")
-        if img.res <= 0:
-            raise ValueError(f"training.natural_image.res must be positive, got {img.res}")
+        if img.res <= 1:
+            raise ValueError(f"training.natural_image.res must be greater than 1, got {img.res}")
+        if img.normalization not in {"log-zscore", "zscore", "maxscale"}:
+            raise ValueError(f"training.natural_image.normalization is unsupported: {img.normalization}")
+        if img.clip_zscore is not None and img.clip_zscore <= 0:
+            raise ValueError(f"training.natural_image.clip_zscore must be positive, got {img.clip_zscore}")
+        if img.projection_chunk_size <= 0:
+            raise ValueError(
+                f"training.natural_image.projection_chunk_size must be positive, got {img.projection_chunk_size}"
+            )
         
         bcm = train.bcm
         if bcm.epochs <= 0:

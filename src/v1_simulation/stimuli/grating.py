@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from v1_simulation.stimuli.receptive_fields import (
+    GaborConfig,
     VisualGrid,
     gabor_kernel,
 )
@@ -35,6 +36,12 @@ class DriftingGratingInput:
         self.grid = VisualGrid.centered_midpoint(
             self.cfg.receptive_field.stimulus_size,
             self.cfg.receptive_field.resolution,
+        )
+        self.gabor_cfg = GaborConfig(
+            sigma=self.cfg.gabor.sigma,
+            gamma=self.cfg.gabor.gamma,
+            spatial_frequency=self.cfg.gabor.spatial_frequency,
+            phase=self.cfg.gabor.phase,
         )
         self._integral_cache: Dict[float, Tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]] = {}
 
@@ -110,7 +117,7 @@ class DriftingGratingInput:
         x = self.l4.coords[:, 0, None, None] + self.grid.x[None, :, :]
         y = self.l4.coords[:, 1, None, None] + self.grid.y[None, :, :]
 
-        phase = rf.spatial_frequency * (
+        phase = rf.gabor.spatial_frequency * (
             x * np.cos(theta_stim) + y * np.sin(theta_stim)
         )
         phase -= self.cfg.temporal_frequency * t
@@ -141,7 +148,7 @@ class DriftingGratingInput:
         sin_coeff = np.zeros(n, dtype=float)
 
         area = self.grid.area_element
-        k = self.cfg.spatial_frequency
+        k = self.cfg.gabor.spatial_frequency
 
         cos_theta = np.cos(theta_stim)
         sin_theta = np.sin(theta_stim)
@@ -169,7 +176,7 @@ class DriftingGratingInput:
 
             for theta_pref in theta_values:
                 group = tuned_mask & (self.l4.preferred_orientations == theta_pref)
-                kernel = gabor_kernel(self.grid, self.cfg, float(theta_pref), tuned)
+                kernel = gabor_kernel(self.grid, self.gabor_cfg, float(theta_pref), tuned)
 
                 group_base = np.sum(kernel * self.cfg.luminance) * area
                 group_cos = np.sum(kernel * self.cfg.luminance * self.cfg.contrast * grid_cos) * area

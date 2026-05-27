@@ -12,10 +12,11 @@ model:
       all_tuned: true
     l23:
       random_inhibitory: false
-  stimulus:
-    resolution: 36
-    n_theta: 4
-    visual_gain: 40.0
+
+stimulus:
+  resolution: 36
+  n_theta: 4
+  visual_gain: 40.0
 
 solver:
   transfer:

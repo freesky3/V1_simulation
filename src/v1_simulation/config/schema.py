@@ -44,13 +44,27 @@ class BackgroundConfig:
 # ==========================================
 
 @dataclass
-class StimulusConfig:
-    kind: str = "drifting_grating"
-    stimulus_size: float = 2.0
+class GaborConfig:
+    """Configuration for Gabor receptive fields and visual stimulus spatial features.
+
+    The gamma parameter is applied linearly to y_prime**2 in RF kernels.
+    """
     sigma: float = 0.085
     gamma: float = 1.0
     spatial_frequency: float = 14.137166941154069
     phase: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.sigma <= 0:
+            raise ValueError("stimulus.gabor.sigma must be positive.")
+        if self.gamma <= 0:
+            raise ValueError("stimulus.gabor.gamma must be positive.")
+
+
+@dataclass
+class StimulusConfig:
+    kind: str = "drifting_grating"
+    stimulus_size: float = 2.0
     baseline_rate: float = 0.0
     resolution: int = 300
     luminance: float = 1.0
@@ -58,6 +72,7 @@ class StimulusConfig:
     temporal_frequency: float = 6.283185307179586
     visual_gain: float = 400.0
     n_theta: int = 8
+    gabor: GaborConfig = field(default_factory=GaborConfig)
 
     # Alias to support self.cfg.receptive_field references in stimuli
     @property
@@ -65,7 +80,7 @@ class StimulusConfig:
         """Alias to support self.cfg.receptive_field legacy references."""
         return self
 
-    # Backward compatibility properties
+    # Backward compatibility properties (old flat field names)
     @property
     def size(self) -> float:
         return self.stimulus_size
@@ -73,22 +88,6 @@ class StimulusConfig:
     @size.setter
     def size(self, val: float):
         self.stimulus_size = val
-
-    @property
-    def k(self) -> float:
-        return self.spatial_frequency
-
-    @k.setter
-    def k(self, val: float):
-        self.spatial_frequency = val
-
-    @property
-    def psi(self) -> float:
-        return self.phase
-
-    @psi.setter
-    def psi(self, val: float):
-        self.phase = val
 
     @property
     def r0(self) -> float:
@@ -129,6 +128,55 @@ class StimulusConfig:
     @omega.setter
     def omega(self, val: float):
         self.temporal_frequency = val
+
+    # Properties delegating to the nested gabor config for backward compatibility
+    @property
+    def sigma(self) -> float:
+        return self.gabor.sigma
+
+    @sigma.setter
+    def sigma(self, val: float):
+        self.gabor.sigma = val
+
+    @property
+    def gamma(self) -> float:
+        return self.gabor.gamma
+
+    @gamma.setter
+    def gamma(self, val: float):
+        self.gabor.gamma = val
+
+    @property
+    def spatial_frequency(self) -> float:
+        return self.gabor.spatial_frequency
+
+    @spatial_frequency.setter
+    def spatial_frequency(self, val: float):
+        self.gabor.spatial_frequency = val
+
+    @property
+    def phase(self) -> float:
+        return self.gabor.phase
+
+    @phase.setter
+    def phase(self, val: float):
+        self.gabor.phase = val
+
+    @property
+    def k(self) -> float:
+        return self.gabor.spatial_frequency
+
+    @k.setter
+    def k(self, val: float):
+        self.gabor.spatial_frequency = val
+
+    @property
+    def psi(self) -> float:
+        return self.gabor.phase
+
+    @psi.setter
+    def psi(self, val: float):
+        self.gabor.phase = val
 
 # ==========================================
 # 4. Model Configuration
@@ -373,10 +421,12 @@ class TrainingNaturalImageConfig:
     dir: Optional[str] = None
     limit: Optional[int] = None
     seed: Optional[int] = None
-    crop_size: int = 512
+    crop_size: Optional[int] = 512
     patches_per_image: int = 4
     res: int = 128
     normalization: str = "log-zscore"
+    clip_zscore: Optional[float] = 3.0
+    projection_chunk_size: int = 64
 
 @dataclass
 class TrainingBCMConfig:

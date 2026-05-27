@@ -2,10 +2,6 @@
 
 kind: drifting_grating
 stimulus_size: 2.0
-sigma: 0.085
-gamma: 1.0
-spatial_frequency: 14.137166941154069
-phase: 0.0
 baseline_rate: 0.0
 resolution: 300
 luminance: 1.0
@@ -13,3 +9,9 @@ contrast: 1.0
 temporal_frequency: 6.283185307179586
 visual_gain: 400.0
 n_theta: 8
+
+gabor:
+  sigma: 0.085
+  gamma: 1.0
+  spatial_frequency: 14.137166941154069
+  phase: 0.0
