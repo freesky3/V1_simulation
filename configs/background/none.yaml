@@ -2,6 +2,7 @@
 
 enabled: false
 seed: null
+interpolation: linear
 tau_e: 0.05
 tau_i: 0.05
 mu_e: 0.0

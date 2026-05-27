@@ -32,6 +32,7 @@ class AnalysisConfig:
 class BackgroundConfig:
     enabled: bool = False
     seed: Optional[int] = None
+    interpolation: str = "linear"
     tau_e: float = 0.05
     tau_i: float = 0.05
     mu_e: float = 0.0

@@ -1,4 +1,27 @@
+import math
+
 from v1_simulation.config.schema import RootConfig
+
+
+def _require_bool(value: bool, path: str) -> None:
+    if not isinstance(value, bool):
+        raise TypeError(f"{path} must be a boolean, got {type(value).__name__}")
+
+
+def _require_optional_non_negative_int(value: int | None, path: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{path} must be an integer or null, got {type(value).__name__}")
+    if value < 0:
+        raise ValueError(f"{path} must be non-negative, got {value}")
+
+
+def _finite_float(value: float, path: str) -> float:
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError(f"{path} must be finite, got {value}")
+    return value
 
 def validate_config(cfg: RootConfig) -> None:
     """Validate all fields in a RootConfig instance for physical correctness and constraints.
@@ -40,11 +63,23 @@ def validate_config(cfg: RootConfig) -> None:
 
     # 3. Background Config
     bg = cfg.background
-    if bg.enabled:
-        if bg.tau_e <= 0.0 or bg.tau_i <= 0.0:
-            raise ValueError(f"Background time constants (tau_e, tau_i) must be positive, got tau_e={bg.tau_e}, tau_i={bg.tau_i}")
-        if bg.sigma_e < 0.0 or bg.sigma_i < 0.0:
-            raise ValueError(f"Background noise standard deviations (sigma_e, sigma_i) must be non-negative, got sigma_e={bg.sigma_e}, sigma_i={bg.sigma_i}")
+    _require_bool(bg.enabled, "background.enabled")
+    _require_optional_non_negative_int(bg.seed, "background.seed")
+    if bg.interpolation not in {"linear", "sample_hold"}:
+        raise ValueError(
+            "background.interpolation must be 'linear' or 'sample_hold', "
+            f"got {bg.interpolation!r}"
+        )
+    tau_e = _finite_float(bg.tau_e, "background.tau_e")
+    tau_i = _finite_float(bg.tau_i, "background.tau_i")
+    sigma_e = _finite_float(bg.sigma_e, "background.sigma_e")
+    sigma_i = _finite_float(bg.sigma_i, "background.sigma_i")
+    _finite_float(bg.mu_e, "background.mu_e")
+    _finite_float(bg.mu_i, "background.mu_i")
+    if tau_e <= 0.0 or tau_i <= 0.0:
+        raise ValueError(f"Background time constants (tau_e, tau_i) must be positive, got tau_e={bg.tau_e}, tau_i={bg.tau_i}")
+    if sigma_e < 0.0 or sigma_i < 0.0:
+        raise ValueError(f"Background noise standard deviations (sigma_e, sigma_i) must be non-negative, got sigma_e={bg.sigma_e}, sigma_i={bg.sigma_i}")
 
     # 4. Model Config
     model = cfg.model
