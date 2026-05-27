@@ -89,8 +89,16 @@ def validate_config(cfg: RootConfig) -> None:
         raise ValueError(f"model.layers.l4.n_side must be positive, got {layers.l4.n_side}")
     if layers.l4.region_size <= 0.0:
         raise ValueError(f"model.layers.l4.region_size must be positive, got {layers.l4.region_size}")
+    if layers.l23.n_side is not None and layers.l23.n_side <= 0:
+        raise ValueError(f"model.layers.l23.n_side must be positive when set, got {layers.l23.n_side}")
     if layers.l23.region_size <= 0.0:
         raise ValueError(f"model.layers.l23.region_size must be positive, got {layers.l23.region_size}")
+    if layers.l23.inhibitory_fraction is not None:
+        if not (0.0 <= layers.l23.inhibitory_fraction <= 1.0):
+            raise ValueError(
+                "model.layers.l23.inhibitory_fraction must be in [0.0, 1.0] "
+                f"when set, got {layers.l23.inhibitory_fraction}"
+            )
     if layers.periodic:
         if abs(layers.l4.region_size - layers.l23.region_size) > 1e-7:
             raise ValueError(
@@ -106,6 +114,7 @@ def validate_config(cfg: RootConfig) -> None:
         raise ValueError(f"model.connectivity.j (coupling weight scale) must be positive, got {conn.j}")
     if conn.g <= 0.0:
         raise ValueError(f"model.connectivity.g (inhibition-to-excitation ratio) must be positive, got {conn.g}")
+    _require_bool(conn.equalize_indegree, "model.connectivity.equalize_indegree")
     
     # Scales
     for scale_name in ["ee", "ei", "ex", "ie", "ii", "ix"]:
@@ -123,8 +132,8 @@ def validate_config(cfg: RootConfig) -> None:
             f"Connectivity kernel sigma_narrow must be smaller than sigma_broad, "
             f"got sigma_narrow={conn.kernel.sigma_narrow}, sigma_broad={conn.kernel.sigma_broad}"
         )
-    if conn.kernel.kappa < 0.0:
-        raise ValueError(f"model.connectivity.kernel.kappa must be non-negative, got {conn.kernel.kappa}")
+    if not (0.0 <= conn.kernel.kappa <= 1.0):
+        raise ValueError(f"model.connectivity.kernel.kappa must be in [0.0, 1.0], got {conn.kernel.kappa}")
 
     # 5. Transfer Config
     trans = cfg.transfer

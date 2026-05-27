@@ -8,14 +8,17 @@ layers:
     z_pos: 0.0
     all_tuned: true
   l23:
+    n_side: null
     region_size: 2.0
     z_pos: 0.1
+    inhibitory_fraction: null
     random_inhibitory: false
 
 connectivity:
   p_ee: 0.12
   j: 3.0
   g: 5.5
+  equalize_indegree: true
   scales:
     ee: 1.0
     ei: 1.08

@@ -198,9 +198,19 @@ class L4Config:
 
 @dataclass
 class L23Config:
+    n_side: Optional[int] = None
     region_size: float = 2.0
     z_pos: float = 0.1
+    inhibitory_fraction: Optional[float] = None
     random_inhibitory: bool = False
+
+    @property
+    def random_I(self) -> bool:
+        return self.random_inhibitory
+
+    @random_I.setter
+    def random_I(self, val: bool):
+        self.random_inhibitory = val
 
 @dataclass
 class LayersConfig:
@@ -254,6 +264,7 @@ class ConnectivityConfig:
     p_ee: float = 0.12
     j: float = 3.0
     g: float = 5.5
+    equalize_indegree: bool = True
     scales: ConnectivityScalesConfig = field(default_factory=ConnectivityScalesConfig)
     kernel: ConnectivityKernelConfig = field(default_factory=ConnectivityKernelConfig)
 

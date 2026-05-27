@@ -23,6 +23,11 @@ class SheetGeometry:
 
         self.coords = self._generate_grid_positions()
 
+    @property
+    def n_cells(self):
+        """Number of cells in this sheet."""
+        return self.N
+
     @staticmethod
     def _validate_positive_int(value, name):
         """Validates that a value is a positive integer.
@@ -101,6 +106,10 @@ class SheetGeometry:
             delta = self._periodic_delta(delta, self.region_size)
         return np.linalg.norm(delta, axis=2)
 
+    def distance_matrix(self, periodic=True):
+        """Alias for get_distance_matrix used by the network samplers."""
+        return self.get_distance_matrix(periodic=periodic)
+
     def get_distance_to(self, other_layer, periodic=True):
         """Calculates the Euclidean distance matrix from this layer to another layer.
 
@@ -128,6 +137,10 @@ class SheetGeometry:
         dist_2d_sq = np.sum(delta_2d**2, axis=2)
         z_diff = self.z_pos - other_layer.z_pos
         return np.sqrt(dist_2d_sq + z_diff**2)
+
+    def distance_to(self, other_layer, periodic=True):
+        """Alias for get_distance_to used by the network samplers."""
+        return self.get_distance_to(other_layer, periodic=periodic)
 
 
 class L4(SheetGeometry):
