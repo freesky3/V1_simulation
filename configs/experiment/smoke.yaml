@@ -14,9 +14,13 @@ model:
       random_inhibitory: false
 
 stimulus:
+  kind: drifting_grating
   resolution: 36
   n_theta: 4
   visual_gain: 40.0
+
+simulation:
+  duration_tau_e: 2.0
 
 solver:
   transfer:

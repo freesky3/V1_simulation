@@ -25,9 +25,10 @@ from v1_simulation.network.empirical import (
     derive_population_counts,
 )
 from v1_simulation.network.geometry import L2_3, L4, SheetGeometry
-from v1_simulation.network.state import NetworkState, PopulationLayout
+from v1_simulation.network.state import NetworkState, PopulationLayout, TrainedNetworkState, load_trained_network_state
 from v1_simulation.network.weights import (
     WeightSpec,
+    apply_trained_weight_scaling,
     as_connection_mask,
     as_dense_weights,
     limit_row_sums,
@@ -51,7 +52,9 @@ __all__ = [
     "PopulationLayout",
     "SheetGeometry",
     "SpatialKernel",
+    "TrainedNetworkState",
     "WeightSpec",
+    "apply_trained_weight_scaling",
     "as_connection_mask",
     "as_dense_weights",
     "assign_l23_types",
@@ -61,6 +64,7 @@ __all__ = [
     "derive_connection_probabilities",
     "derive_population_counts",
     "limit_row_sums",
+    "load_trained_network_state",
     "make_network_rngs",
     "probability_block",
     "probability_matrix",

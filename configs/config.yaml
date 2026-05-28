@@ -3,8 +3,9 @@ defaults:
   - background: none
   - model: default
   - paths: local
+  - simulation: default
   - solver: scipy_rk4
-  - stimulus: natural_image
+  - stimulus: drifting_grating
   - sweep: local_grid
   - transfer: siegert
   - _self_

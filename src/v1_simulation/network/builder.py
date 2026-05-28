@@ -16,8 +16,8 @@ from v1_simulation.network.empirical import (
     derive_population_counts,
 )
 from v1_simulation.network.geometry import SheetGeometry
-from v1_simulation.network.state import NetworkState, PopulationLayout
-from v1_simulation.network.weights import WeightSpec, sample_weights
+from v1_simulation.network.state import NetworkState, PopulationLayout, load_trained_network_state
+from v1_simulation.network.weights import WeightSpec, apply_trained_weight_scaling, sample_weights
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +70,24 @@ def build_network_state(
     """
 
     model_cfg, resolved_path, resolved_seed = _resolve_config_inputs(cfg, sample_data_path, seed)
+    trained_path = getattr(model_cfg, "trained_network_path", None)
+    if trained_path:
+        trained_state = load_trained_network_state(trained_path, model_cfg=model_cfg)
+        weights, scale_ratios = apply_trained_weight_scaling(
+            trained_state.network.weights,
+            model_cfg,
+            trained_state,
+        )
+        source = dict(trained_state.network.source)
+        if scale_ratios:
+            source["scale_ratios"] = scale_ratios
+        return NetworkState(
+            layout=trained_state.network.layout,
+            connectivity=trained_state.network.connectivity,
+            weights=weights,
+            source=source,
+        )
+
     empirical_data = empirical if empirical is not None else EmpiricalData.from_path(resolved_path)
     streams = rngs if rngs is not None else make_network_rngs(resolved_seed)
 

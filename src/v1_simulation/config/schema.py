@@ -417,7 +417,21 @@ class SolverConfig:
     transfer: TransferConfig = field(default_factory=TransferConfig)
 
 # ==========================================
-# 8. Sweep Configuration
+# 8. Simulation Configuration
+# ==========================================
+
+@dataclass
+class SimulationConfig:
+    t_start: float = 0.0
+    t_stop: Optional[float] = None
+    duration_tau_e: float = 100.0
+    dt: Optional[float] = None
+    dt_tau_i_fraction: float = 1.0 / 3.0
+    store_trajectory: bool = True
+    save_network: bool = True
+
+# ==========================================
+# 9. Sweep Configuration
 # ==========================================
 
 @dataclass
@@ -428,7 +442,7 @@ class SweepConfig:
     grid: Dict[str, Any] = field(default_factory=dict)
 
 # ==========================================
-# 9. Training Configuration
+# 10. Training Configuration
 # ==========================================
 
 @dataclass
@@ -469,7 +483,7 @@ class TrainingConfig:
     bcm: TrainingBCMConfig = field(default_factory=TrainingBCMConfig)
 
 # ==========================================
-# 10. Root Configuration
+# 11. Root Configuration
 # ==========================================
 
 @dataclass
@@ -482,6 +496,7 @@ class RootConfig:
     background: BackgroundConfig = field(default_factory=BackgroundConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
+    simulation: SimulationConfig = field(default_factory=SimulationConfig)
     solver: SolverConfig = field(default_factory=SolverConfig)
     stimulus: StimulusConfig = field(default_factory=StimulusConfig)
     sweep: SweepConfig = field(default_factory=SweepConfig)

@@ -198,7 +198,26 @@ def validate_config(cfg: RootConfig) -> None:
     if sol.diffrax is not None and sol.diffrax.solver not in {"tsit5"}:
         raise ValueError(f"solver.diffrax.solver must be 'tsit5', got {sol.diffrax.solver!r}")
 
-    # 7. Stimulus Config
+    # 7. Simulation Config
+    sim = cfg.simulation
+    t_start = _finite_float(sim.t_start, "simulation.t_start")
+    if sim.t_stop is not None:
+        t_stop = _finite_float(sim.t_stop, "simulation.t_stop")
+        if t_stop <= t_start:
+            raise ValueError("simulation.t_stop must be greater than simulation.t_start")
+    if _finite_float(sim.duration_tau_e, "simulation.duration_tau_e") <= 0.0:
+        raise ValueError(f"simulation.duration_tau_e must be positive, got {sim.duration_tau_e}")
+    if sim.dt is not None and _finite_float(sim.dt, "simulation.dt") <= 0.0:
+        raise ValueError(f"simulation.dt must be positive when set, got {sim.dt}")
+    if _finite_float(sim.dt_tau_i_fraction, "simulation.dt_tau_i_fraction") <= 0.0:
+        raise ValueError(
+            "simulation.dt_tau_i_fraction must be positive, "
+            f"got {sim.dt_tau_i_fraction}"
+        )
+    _require_bool(sim.store_trajectory, "simulation.store_trajectory")
+    _require_bool(sim.save_network, "simulation.save_network")
+
+    # 8. Stimulus Config
     stim = cfg.stimulus
     if stim.kind not in {"drifting_grating", "natural_image"}:
         raise ValueError(f"stimulus.kind must be 'drifting_grating' or 'natural_image', got '{stim.kind}'")
@@ -223,7 +242,7 @@ def validate_config(cfg: RootConfig) -> None:
     if stim.n_theta <= 0:
         raise ValueError(f"stimulus.n_theta must be positive, got {stim.n_theta}")
 
-    # 8. Training Config
+    # 9. Training Config
     train = cfg.training
     if train.enabled:
         img = train.natural_image

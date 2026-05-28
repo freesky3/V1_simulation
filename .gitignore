@@ -17,3 +17,7 @@ data/
 *.png
 *.gif
 *.log
+
+# Pytest temporary files
+.pytest/
+pytest_temp/

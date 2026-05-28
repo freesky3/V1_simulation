@@ -119,6 +119,85 @@ class TrainingArtifacts:
         return path
 
 
+class SimulationArtifacts:
+    """Filesystem helper for saving and organizing simulation run artifacts.
+
+    Attributes:
+        run_dir: The unique directory path for this simulation run.
+    """
+
+    def __init__(self, run_dir: str | Path) -> None:
+        self.run_dir = Path(run_dir)
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def create(cls, run_root: str | Path, *, job_name: str = "simulation") -> "SimulationArtifacts":
+        """Creates a SimulationArtifacts instance with a unique, timestamped run directory.
+
+        Args:
+            run_root: The root path under which the job directory will be created.
+            job_name: The name of the job directory.
+
+        Returns:
+            A new SimulationArtifacts instance.
+        """
+        return cls(create_unique_run_dir(run_root, job_name=job_name))
+
+    def save_result(self, result, *, save_network: bool = True) -> Path:
+        """Persists the simulation results (trajectories, metadata, network state) to disk.
+
+        Args:
+            result: The SimulationResult object.
+            save_network: If True, saves the network state as a checkpoint.
+
+        Returns:
+            The Path to the directory where results were saved.
+        """
+        return write_simulation_artifacts(result, self.run_dir, save_network=save_network)
+
+
+def write_simulation_artifacts(result, output_dir: str | Path, *, save_network: bool = True) -> Path:
+    """Writes simulation arrays, metadata, and an optional network checkpoint to disk.
+
+    Args:
+        result: The SimulationResult object containing trajectories and network state.
+        output_dir: The target output directory path.
+        save_network: If True, saves the network state as a checkpoint under output_dir/network.
+
+    Returns:
+        The Path to the output directory.
+    """
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(output_dir / "theta_angles.npy", result.theta_angles)
+    np.save(output_dir / "time.npy", result.time)
+    np.save(output_dir / "exc_mean.npy", result.ode.exc)
+    np.save(output_dir / "inh_mean.npy", result.ode.inh)
+
+    if result.ode.exc_trajectory is not None:
+        np.save(output_dir / "responses_exc.npy", result.exc_responses)
+        np.save(output_dir / "aE_all.npy", result.aE_all)
+    if result.ode.inh_trajectory is not None:
+        np.save(output_dir / "responses_inh.npy", result.inh_responses)
+        np.save(output_dir / "aI_all.npy", result.aI_all)
+
+    with (output_dir / "run_config.json").open("w", encoding="utf-8") as f:
+        json.dump(json_ready(result.metadata), f, indent=2)
+
+    if save_network:
+        from v1_simulation.training.checkpoints import save_checkpoint
+
+        save_checkpoint(
+            output_dir,
+            "network",
+            result.network,
+            metadata={"network_source": dict(result.network.source)},
+        )
+    return output_dir
+
+
 def flatten_log_row(row: Any) -> dict[str, Any]:
     """Flattens a dataclass or mapping into CSV-friendly top-level columns."""
 

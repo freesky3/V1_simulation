@@ -16,12 +16,156 @@ from v1_simulation.network.state import NetworkState
 from v1_simulation.solvers.base import BatchODEResult
 from v1_simulation.solvers.wilson_cowan import solve_wilson_cowan_batch
 from v1_simulation.stimuli.background import generate_background_trace, validate_time_grid
+from v1_simulation.stimuli.grating import DriftingGratingInput
+from v1_simulation.simulation.result import SimulationResult
 from v1_simulation.training.checkpoints import save_checkpoint, save_theta
 from v1_simulation.training.natural_inputs import build_natural_image_l4_drive
 from v1_simulation.training.trainer import BCMTrainer, TrainingResult
 
 
 SolverCallable = Callable[..., BatchODEResult]
+
+
+def run_drifting_grating_pipeline(
+    cfg: RootConfig,
+    *,
+    network: NetworkState | None = None,
+    empirical: EmpiricalData | None = None,
+    time: Sequence[float] | np.ndarray | None = None,
+    solver: SolverCallable | None = None,
+) -> SimulationResult:
+    """Runs a drifting-grating simulation batch using the specified configuration.
+
+    This function sets up the network, generates the stimulus drive and background noise trace,
+    and runs the ODE solver to generate the trajectories for all specified stimulus orientations.
+
+    Args:
+        cfg: The root configuration object.
+        network: Optional pre-constructed NetworkState.
+        empirical: Optional EmpiricalData for building network.
+        time: Optional time grid.
+        solver: Optional custom ODE solver function.
+
+    Returns:
+        A SimulationResult containing the solver trajectories and metadata.
+
+    Raises:
+        ValueError: If the stimulus kind is not 'drifting_grating'.
+    """
+
+    validate_config(cfg)
+    if cfg.stimulus.kind != "drifting_grating":
+        raise ValueError("cfg.stimulus.kind must be 'drifting_grating' for this simulation pipeline.")
+
+    run_network = network if network is not None else build_network_state(cfg, empirical=empirical)
+    theta_angles = build_theta_angles(cfg)
+    time_grid = (
+        default_simulation_time_grid(cfg)
+        if time is None
+        else validate_time_grid(np.asarray(time, dtype=float), copy=True)
+    )
+    stimulus = DriftingGratingInput(
+        cfg.stimulus,
+        run_network.layout.l4,
+        l4_tunings=run_network.layout.l4_tunings,
+        l4_pref_dirs=run_network.layout.l4_pref_dirs,
+    )
+    background_trace = _make_simulation_background_trace(
+        cfg,
+        network=run_network,
+        n_batch=theta_angles.size,
+        time=time_grid,
+    )
+    solver_fn = solve_wilson_cowan_batch if solver is None else solver
+    ode = solver_fn(
+        network=run_network,
+        external_drive=stimulus.make_batched_drive_func(theta_angles),
+        time=time_grid,
+        n_batch=theta_angles.size,
+        solver_config=cfg.solver,
+        transfer_config=cfg.solver.transfer,
+        background_trace=background_trace,
+        store_trajectory=cfg.simulation.store_trajectory,
+        stop_at_steady_state=False,
+    )
+
+    return SimulationResult(
+        ode=ode,
+        theta_angles=theta_angles,
+        time=time_grid,
+        network=run_network,
+        metadata=build_simulation_metadata(cfg, run_network, theta_angles, time_grid),
+    )
+
+
+def build_theta_angles(cfg: RootConfig) -> np.ndarray:
+    """Builds the array of stimulus orientation angles in radians.
+
+    Args:
+        cfg: The root configuration containing stimulus settings.
+
+    Returns:
+        A 1D numpy array of shape (n_theta,) containing orientation angles.
+    """
+    return np.linspace(0.0, np.pi, int(cfg.stimulus.n_theta), endpoint=False, dtype=float)
+
+
+def default_simulation_time_grid(cfg: RootConfig) -> np.ndarray:
+    """Builds the default time grid for the simulation based on configuration settings.
+
+    Args:
+        cfg: The root configuration.
+
+    Returns:
+        A 1D numpy array of the validated time grid.
+
+    Raises:
+        ValueError: If the resulting time grid has fewer than two points.
+    """
+    sim = cfg.simulation
+    transfer = cfg.solver.transfer
+    start = float(sim.t_start)
+    stop = (
+        float(sim.t_stop)
+        if sim.t_stop is not None
+        else start + float(sim.duration_tau_e) * float(transfer.tau_e)
+    )
+    step = float(sim.dt) if sim.dt is not None else float(sim.dt_tau_i_fraction) * float(transfer.tau_i)
+    time = validate_time_grid(np.arange(start, stop, step, dtype=float), copy=False)
+    if time.size < 2:
+        raise ValueError("simulation time grid must contain at least two points.")
+    return time
+
+
+def build_simulation_metadata(
+    cfg: RootConfig,
+    network: NetworkState,
+    theta_angles: np.ndarray,
+    time: np.ndarray,
+) -> dict[str, object]:
+    """Prepares and structures run metadata for the simulation.
+
+    Args:
+        cfg: The root configuration.
+        network: The NetworkState used in the simulation.
+        theta_angles: The stimulus orientations used.
+        time: The simulation time grid.
+
+    Returns:
+        A dictionary containing structured run metadata.
+    """
+    return {
+        "config": asdict(cfg),
+        "network_source": dict(network.source),
+        "idx_E": network.idx_E.tolist(),
+        "idx_I": network.idx_I.tolist(),
+        "idx_X": network.idx_X.tolist(),
+        "l23_n_side": int(network.layout.l23.n_side),
+        "theta_angles": np.asarray(theta_angles, dtype=float).tolist(),
+        "time_steps": int(time.size),
+        "t_start": float(time[0]),
+        "t_final": float(time[-1]),
+    }
 
 
 def run_bcm_training(
@@ -209,6 +353,26 @@ def default_training_time_grid(cfg: RootConfig) -> np.ndarray:
     stop = 100.0 * float(transfer.tau_e)
     step = float(transfer.tau_i) / 3.0
     return validate_time_grid(np.arange(0.0, stop, step, dtype=float), copy=False)
+
+
+def _make_simulation_background_trace(
+    cfg: RootConfig,
+    *,
+    network: NetworkState,
+    n_batch: int,
+    time: np.ndarray,
+):
+    if not cfg.background.enabled:
+        return None
+    base_seed = cfg.background.seed if cfg.background.seed is not None else cfg.seed + 200000
+    return generate_background_trace(
+        cfg.background,
+        n_exc=network.layout.n_E,
+        n_inh=network.layout.n_I,
+        n_batch=n_batch,
+        time=time,
+        seed=np.random.SeedSequence([int(base_seed), 0]),
+    )
 
 
 def _make_background_trace(

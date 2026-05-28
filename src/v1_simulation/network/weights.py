@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -198,6 +199,61 @@ def row_sums(weights: ArrayLike | sparse.spmatrix) -> NDArray[np.float64]:
     return np.sum(as_dense_weights(weights, name="weights"), axis=1)
 
 
+def apply_trained_weight_scaling(
+    weights: ArrayLike | sparse.spmatrix,
+    model_cfg: Any,
+    trained_state,
+) -> tuple[sparse.csr_matrix, dict[str, float]]:
+    """Rescales a trained weight matrix by current-vs-training coupling/block gain ratios.
+
+    Args:
+        weights: The trained weight matrix (dense or sparse).
+        model_cfg: The current model configuration.
+        trained_state: The loaded TrainedNetworkState containing layout and original indices.
+
+    Returns:
+        A tuple of:
+            - rescaled_weights: The rescaled sparse weight matrix.
+            - changed_ratios: A dictionary of rescaled block ratios (excluding ratio=1.0).
+
+    Raises:
+        ValueError: If original coupling/gain is zero.
+    """
+
+    training_cfg = getattr(trained_state, "training_cfg", None)
+    if not training_cfg:
+        matrix = sparse.csr_matrix(as_dense_weights(weights, name="trained weights"))
+        matrix.eliminate_zeros()
+        return matrix, {}
+
+    scaled = as_dense_weights(weights, name="trained weights")
+    idx_E = trained_state.idx_E
+    idx_I = trained_state.idx_I
+    idx_X = trained_state.idx_X
+    ratios = {
+        "EE": _block_gain(model_cfg, "ee") / _block_gain(training_cfg, "ee"),
+        "EI": _block_gain(model_cfg, "ei", inhibitory=True)
+        / _block_gain(training_cfg, "ei", inhibitory=True),
+        "EX": _block_gain(model_cfg, "ex") / _block_gain(training_cfg, "ex"),
+        "IE": _block_gain(model_cfg, "ie") / _block_gain(training_cfg, "ie"),
+        "II": _block_gain(model_cfg, "ii", inhibitory=True)
+        / _block_gain(training_cfg, "ii", inhibitory=True),
+        "IX": _block_gain(model_cfg, "ix") / _block_gain(training_cfg, "ix"),
+    }
+
+    _scale_block(scaled, idx_E, idx_E, ratios["EE"])
+    _scale_block(scaled, idx_E, idx_I, ratios["EI"])
+    _scale_block(scaled, idx_E, idx_X, ratios["EX"])
+    _scale_block(scaled, idx_I, idx_E, ratios["IE"])
+    _scale_block(scaled, idx_I, idx_I, ratios["II"])
+    _scale_block(scaled, idx_I, idx_X, ratios["IX"])
+
+    changed = {key: value for key, value in ratios.items() if not np.isclose(value, 1.0)}
+    matrix = sparse.csr_matrix(scaled)
+    matrix.eliminate_zeros()
+    return matrix, changed
+
+
 def sample_weights(
     layout: PopulationLayout,
     connectivity: sparse.csr_matrix,
@@ -268,3 +324,55 @@ def _append_weight_block(
     rows.append(target_idx[local_rows])
     cols.append(source_idx[local_cols])
     data.append(float(gain) * rng.choice(samples, size=local_rows.size))
+
+
+def _block_gain(cfg: Any, block: str, *, inhibitory: bool = False) -> float:
+    connectivity = _connectivity_config(cfg)
+    gain = _cfg_float(connectivity, "j", "J", 3.0) * _scale_value(connectivity, block)
+    if inhibitory:
+        gain *= _cfg_float(connectivity, "g", "g", 5.0)
+    if gain == 0.0:
+        raise ValueError(f"Gain for {block.upper()} block is zero; cannot rescale trained weights.")
+    return float(gain)
+
+
+def _connectivity_config(cfg: Any) -> Any:
+    if isinstance(cfg, Mapping):
+        if "model" in cfg and isinstance(cfg["model"], Mapping):
+            return _connectivity_config(cfg["model"])
+        if "connectivity" in cfg and isinstance(cfg["connectivity"], Mapping):
+            return cfg["connectivity"]
+        return cfg
+    if hasattr(cfg, "model"):
+        return _connectivity_config(getattr(cfg, "model"))
+    return getattr(cfg, "connectivity", cfg)
+
+
+def _scale_value(connectivity: Any, block: str) -> float:
+    scales = _field(connectivity, "scales", None)
+    if scales is not None:
+        return _cfg_float(scales, block, f"J_{block.upper()}_scale", 1.0)
+    return _cfg_float(connectivity, f"{block}_scale", f"J_{block.upper()}_scale", 1.0)
+
+
+def _cfg_float(cfg: Any, primary: str, legacy: str, default: float) -> float:
+    value = _field(cfg, primary, None)
+    if value is None:
+        value = _field(cfg, legacy, default)
+    return float(value)
+
+
+def _field(cfg: Any, key: str, default: Any) -> Any:
+    if isinstance(cfg, Mapping):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
+
+
+def _scale_block(
+    weights: NDArray[np.float64],
+    target_idx: NDArray[np.int64],
+    source_idx: NDArray[np.int64],
+    ratio: float,
+) -> None:
+    if not np.isclose(ratio, 1.0):
+        weights[np.ix_(target_idx, source_idx)] *= float(ratio)

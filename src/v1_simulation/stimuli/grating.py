@@ -24,7 +24,14 @@ class DriftingGratingInput:
     fields analytically, allowing very fast continuous-time drive calculations.
     """
 
-    def __init__(self, cfg_drifting_grating: StimulusConfig, l4: L4):
+    def __init__(
+        self,
+        cfg_drifting_grating: StimulusConfig,
+        l4: L4,
+        *,
+        l4_tunings: ArrayLike | None = None,
+        l4_pref_dirs: ArrayLike | None = None,
+    ):
         """Initializes the DriftingGratingInput generator.
 
         Args:
@@ -33,6 +40,11 @@ class DriftingGratingInput:
         """
         self.cfg = cfg_drifting_grating
         self.l4 = l4
+        self._is_tuned, self._preferred_orientations = _resolve_l4_tuning_arrays(
+            l4,
+            l4_tunings=l4_tunings,
+            l4_pref_dirs=l4_pref_dirs,
+        )
         self.grid = VisualGrid.centered_midpoint(
             self.cfg.receptive_field.stimulus_size,
             self.cfg.receptive_field.resolution,
@@ -164,18 +176,18 @@ class DriftingGratingInput:
         cell_sin = np.sin(cell_phase)
 
         for tuned in (False, True):
-            tuned_mask = self.l4.is_tuned == tuned
+            tuned_mask = self._is_tuned == tuned
             if not np.any(tuned_mask):
                 continue
 
             theta_values = (
-                np.unique(self.l4.preferred_orientations[tuned_mask])
+                np.unique(self._preferred_orientations[tuned_mask])
                 if tuned
                 else np.array([0.0])
             )
 
             for theta_pref in theta_values:
-                group = tuned_mask & (self.l4.preferred_orientations == theta_pref)
+                group = tuned_mask & (self._preferred_orientations == theta_pref)
                 kernel = gabor_kernel(self.grid, self.gabor_cfg, float(theta_pref), tuned)
 
                 group_base = np.sum(kernel * self.cfg.luminance) * area
@@ -188,3 +200,27 @@ class DriftingGratingInput:
 
         self._integral_cache[key] = (base, cos_coeff, sin_coeff)
         return self._integral_cache[key]
+
+
+def _resolve_l4_tuning_arrays(
+    l4,
+    *,
+    l4_tunings: ArrayLike | None,
+    l4_pref_dirs: ArrayLike | None,
+) -> tuple[NDArray[np.bool_], NDArray[np.float64]]:
+    if hasattr(l4, "is_tuned") and hasattr(l4, "preferred_orientations"):
+        return (
+            np.asarray(l4.is_tuned, dtype=bool),
+            np.asarray(l4.preferred_orientations, dtype=float),
+        )
+
+    if l4_tunings is None or l4_pref_dirs is None:
+        raise ValueError("l4_tunings and l4_pref_dirs are required for generic L4 geometries.")
+
+    tunings = np.asarray(l4_tunings).astype(str, copy=False).reshape(-1)
+    pref_dirs = np.asarray(l4_pref_dirs, dtype=float).reshape(-1)
+    if tunings.shape != (l4.N,):
+        raise ValueError(f"l4_tunings must have shape ({l4.N},), got {tunings.shape}.")
+    if pref_dirs.shape != (l4.N,):
+        raise ValueError(f"l4_pref_dirs must have shape ({l4.N},), got {pref_dirs.shape}.")
+    return tunings == "T", np.nan_to_num(pref_dirs, nan=0.0)
