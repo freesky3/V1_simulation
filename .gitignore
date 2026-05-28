@@ -10,7 +10,7 @@ wheels/
 .venv
 
 runs/
-data/
+/data/
 
 *.npy
 *.npz
