@@ -18,7 +18,7 @@ training:
     projection_chunk_size: 64
   bcm:
     epochs: 1
-    batch_size: 16
+    batch_size: 128
     eta: 3.0e-5
     theta_beta: 0.01
     theta_eps: 1.0e-6

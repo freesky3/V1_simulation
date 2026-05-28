@@ -5,3 +5,8 @@ method: adaptive
 
 diffrax:
   solver: tsit5
+
+jax:
+  prefer_sparse: false
+  dense_max_mb: 512.0
+

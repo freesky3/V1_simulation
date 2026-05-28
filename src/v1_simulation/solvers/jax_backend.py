@@ -83,10 +83,15 @@ def solve_jax_rk4(
         dense_max_mb=options.jax_dense_max_mb,
     )
 
+    is_static = bool(
+        np.all(ax_left == ax_left[0]) and np.all(ax_mid == ax_left[0]) and np.all(ax_right == ax_left[0])
+    )
     y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=jnp.asarray(time).dtype)
-    cache_key = options.store_trajectory
+    cache_key = (options.store_trajectory, is_static)
     if cache_key not in _jax_rk4_solve_cache:
-        _jax_rk4_solve_cache[cache_key] = _make_jax_rk4(jax, jnp, store_trajectory=options.store_trajectory)
+        _jax_rk4_solve_cache[cache_key] = _make_jax_rk4(
+            jax, jnp, store_trajectory=options.store_trajectory, is_static=is_static
+        )
     run = _jax_rk4_solve_cache[cache_key]
     out = run(
         y0,
@@ -187,8 +192,9 @@ def solve_diffrax(
         dense_max_mb=options.jax_dense_max_mb,
     )
 
+    is_static = bool(np.all(ax_t == ax_t[0]))
     y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=jnp.asarray(time).dtype)
-    cache_key = (options.diffrax_solver, options.store_trajectory)
+    cache_key = (options.diffrax_solver, options.store_trajectory, is_static)
     if cache_key not in _diffrax_solve_cache:
         _diffrax_solve_cache[cache_key] = _make_diffrax_diffeqsolve(
             jax,
@@ -196,6 +202,7 @@ def solve_diffrax(
             diffrax,
             solver_name=options.diffrax_solver,
             store_trajectory=options.store_trajectory,
+            is_static=is_static,
         )
     run = _diffrax_solve_cache[cache_key]
 
@@ -243,6 +250,7 @@ def _make_diffrax_diffeqsolve(
     *,
     solver_name: str,
     store_trajectory: bool,
+    is_static: bool,
 ):
     """Creates a JIT-compiled JAX function to solve the Wilson-Cowan ODEs using Diffrax.
 
@@ -252,12 +260,51 @@ def _make_diffrax_diffeqsolve(
         diffrax: The diffrax module.
         solver_name: The name of the Diffrax solver to use (e.g., 'tsit5').
         store_trajectory: Whether to return the full rate trajectories at all time points.
+        is_static: Whether the external L4 stimulus drive is constant over time.
 
     Returns:
         A JIT-compiled callable `run` that executes the ODE integration.
     """
     def interp_phi(x, xp, fp):
         return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
+
+    if is_static:
+        def vector_field(t, y, args):
+            W_exc, W_inh, mu_ext, bg_e_interp, bg_i_interp, phi_exc_x, phi_exc_y, phi_inh_x, phi_inh_y, tau_exc, tau_inh, idx_exc, idx_inh = args
+            curr_bg_e = bg_e_interp.evaluate(t)
+            curr_bg_i = bg_i_interp.evaluate(t)
+
+            mu = W_exc @ y[idx_exc, :] + W_inh @ y[idx_inh, :] + mu_ext
+
+            dy = jnp.zeros_like(y)
+            dy = dy.at[idx_exc, :].set(
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y))
+                / tau_exc
+            )
+            dy = dy.at[idx_inh, :].set(
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y))
+                / tau_inh
+            )
+            return dy
+    else:
+        def vector_field(t, y, args):
+            W_exc, W_inh, W_ext, ax_interp, bg_e_interp, bg_i_interp, phi_exc_x, phi_exc_y, phi_inh_x, phi_inh_y, tau_exc, tau_inh, idx_exc, idx_inh = args
+            ax = ax_interp.evaluate(t)
+            curr_bg_e = bg_e_interp.evaluate(t)
+            curr_bg_i = bg_i_interp.evaluate(t)
+
+            mu = W_exc @ y[idx_exc, :] + W_inh @ y[idx_inh, :] + W_ext @ ax
+
+            dy = jnp.zeros_like(y)
+            dy = dy.at[idx_exc, :].set(
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y))
+                / tau_exc
+            )
+            dy = dy.at[idx_inh, :].set(
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y))
+                / tau_inh
+            )
+            return dy
 
     def run(
         y0,
@@ -276,33 +323,48 @@ def _make_diffrax_diffeqsolve(
         tau_exc,
         tau_inh,
     ):
-        # The forcing traces are linearly interpolated between simulation grid points.
-        # This differs from RK4 left/mid/right sampling and may not be numerically identical.
-        ax_interp = diffrax.LinearInterpolation(time, ax_t)
+        W_exc = weights[:, idx_exc]
+        W_inh = weights[:, idx_inh]
+        W_ext = weights[:, idx_ext]
+
         bg_e_interp = diffrax.LinearInterpolation(time, bg_e)
         bg_i_interp = diffrax.LinearInterpolation(time, bg_i)
 
-        def vector_field(t, y, args):
-            ax = ax_interp.evaluate(t)
-            curr_bg_e = bg_e_interp.evaluate(t)
-            curr_bg_i = bg_i_interp.evaluate(t)
-
-            sources = jnp.zeros((weights.shape[1], y.shape[1]), dtype=y.dtype)
-            sources = sources.at[idx_exc, :].set(y[idx_exc, :])
-            sources = sources.at[idx_inh, :].set(y[idx_inh, :])
-            sources = sources.at[idx_ext, :].set(ax)
-
-            mu = weights @ sources
-            dy = jnp.zeros_like(y)
-            dy = dy.at[idx_exc, :].set(
-                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y))
-                / tau_exc
+        if is_static:
+            mu_ext = W_ext @ ax_t[0]
+            args = (
+                W_exc,
+                W_inh,
+                mu_ext,
+                bg_e_interp,
+                bg_i_interp,
+                phi_exc_x,
+                phi_exc_y,
+                phi_inh_x,
+                phi_inh_y,
+                tau_exc,
+                tau_inh,
+                idx_exc,
+                idx_inh,
             )
-            dy = dy.at[idx_inh, :].set(
-                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y))
-                / tau_inh
+        else:
+            ax_interp = diffrax.LinearInterpolation(time, ax_t)
+            args = (
+                W_exc,
+                W_inh,
+                W_ext,
+                ax_interp,
+                bg_e_interp,
+                bg_i_interp,
+                phi_exc_x,
+                phi_exc_y,
+                phi_inh_x,
+                phi_inh_y,
+                tau_exc,
+                tau_inh,
+                idx_exc,
+                idx_inh,
             )
-            return dy
 
         term = diffrax.ODETerm(vector_field)
         if solver_name == "tsit5":
@@ -320,6 +382,7 @@ def _make_diffrax_diffeqsolve(
             t1=time[-1],
             dt0=dt0,
             y0=y0,
+            args=args,
             saveat=saveat,
             stepsize_controller=stepsize_controller,
         )
@@ -385,42 +448,70 @@ def _precompute_diffrax_background(
     )
 
 
-def _make_jax_rk4(jax, jnp, *, store_trajectory: bool):
+def _make_jax_rk4(jax, jnp, *, store_trajectory: bool, is_static: bool):
     def interp_phi(x, xp, fp):
         return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
 
-    def wc_rhs(
-        y,
-        ax,
-        bg_e,
-        bg_i,
-        weights,
-        idx_exc,
-        idx_inh,
-        idx_ext,
-        phi_exc_x,
-        phi_exc_y,
-        phi_inh_x,
-        phi_inh_y,
-        tau_exc,
-        tau_inh,
-    ):
-        sources = jnp.zeros((weights.shape[1], y.shape[1]), dtype=y.dtype)
-        sources = sources.at[idx_exc, :].set(y[idx_exc, :])
-        sources = sources.at[idx_inh, :].set(y[idx_inh, :])
-        sources = sources.at[idx_ext, :].set(ax)
-
-        mu = weights @ sources
-        dy = jnp.zeros_like(y)
-        dy = dy.at[idx_exc, :].set(
-            (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + bg_e, phi_exc_x, phi_exc_y))
-            / tau_exc
-        )
-        dy = dy.at[idx_inh, :].set(
-            (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + bg_i, phi_inh_x, phi_inh_y))
-            / tau_inh
-        )
-        return dy
+    if is_static:
+        def wc_rhs(
+            y,
+            ax,
+            bg_e,
+            bg_i,
+            W_exc,
+            W_inh,
+            W_ext,
+            idx_exc,
+            idx_inh,
+            phi_exc_x,
+            phi_exc_y,
+            phi_inh_x,
+            phi_inh_y,
+            tau_exc,
+            tau_inh,
+            mu_ext,
+        ):
+            mu = W_exc @ y[idx_exc, :] + W_inh @ y[idx_inh, :] + mu_ext
+            dy = jnp.zeros_like(y)
+            dy = dy.at[idx_exc, :].set(
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + bg_e, phi_exc_x, phi_exc_y))
+                / tau_exc
+            )
+            dy = dy.at[idx_inh, :].set(
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + bg_i, phi_inh_x, phi_inh_y))
+                / tau_inh
+            )
+            return dy
+    else:
+        def wc_rhs(
+            y,
+            ax,
+            bg_e,
+            bg_i,
+            W_exc,
+            W_inh,
+            W_ext,
+            idx_exc,
+            idx_inh,
+            phi_exc_x,
+            phi_exc_y,
+            phi_inh_x,
+            phi_inh_y,
+            tau_exc,
+            tau_inh,
+            mu_ext,
+        ):
+            mu = W_exc @ y[idx_exc, :] + W_inh @ y[idx_inh, :] + W_ext @ ax
+            dy = jnp.zeros_like(y)
+            dy = dy.at[idx_exc, :].set(
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + bg_e, phi_exc_x, phi_exc_y))
+                / tau_exc
+            )
+            dy = dy.at[idx_inh, :].set(
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + bg_i, phi_inh_x, phi_inh_y))
+                / tau_inh
+            )
+            return dy
 
     def run(
         y0,
@@ -445,17 +536,28 @@ def _make_jax_rk4(jax, jnp, *, store_trajectory: bool):
         tau_exc,
         tau_inh,
     ):
+        W_exc = weights[:, idx_exc]
+        W_inh = weights[:, idx_inh]
+        W_ext = weights[:, idx_ext]
+
+        if is_static:
+            mu_ext = W_ext @ ax_left[0]
+        else:
+            mu_ext = None
+
         params = (
-            weights,
+            W_exc,
+            W_inh,
+            W_ext,
             idx_exc,
             idx_inh,
-            idx_ext,
             phi_exc_x,
             phi_exc_y,
             phi_inh_x,
             phi_inh_y,
             tau_exc,
             tau_inh,
+            mu_ext,
         )
         dts = time[1:] - time[:-1]
 

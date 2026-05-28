@@ -5,7 +5,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
+import matplotlib
+try:
+    import matplotlib.pyplot as plt
+except ValueError:
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
 import numpy as np
 
 from v1_simulation.analysis.types import AnalysisResult
