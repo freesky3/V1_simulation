@@ -189,6 +189,7 @@ def integrate_siegert_kernel(
 
     if grid_min == grid_max:
         out[finite] = 0.0
+        out[nans] = np.nan
         return out
 
     n_grid = max(2, int(np.ceil((grid_max - grid_min) / grid_step)) + 1)
@@ -203,6 +204,7 @@ def integrate_siegert_kernel(
     lower_vals = np.interp(lower_arr[finite], grid, antiderivative)
     upper_vals = np.interp(upper_arr[finite], grid, antiderivative)
     out[finite] = upper_vals - lower_vals
+    out[nans] = np.nan
 
     return out
 
