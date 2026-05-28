@@ -28,3 +28,13 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 addopts = "--basetemp=.pytest"
+
+[project.optional-dependencies]
+jax = [
+    "jax",
+    "diffrax",
+]
+jax-cuda12 = [
+    "jax[cuda12]",
+    "diffrax",
+]

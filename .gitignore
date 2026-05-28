@@ -21,3 +21,6 @@ data/
 # Pytest temporary files
 .pytest/
 pytest_temp/
+
+# temporary ignore
+docs/

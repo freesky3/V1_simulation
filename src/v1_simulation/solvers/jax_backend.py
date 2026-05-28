@@ -133,7 +133,7 @@ def solve_diffrax(
     time: FloatArray,
     options: SolverOptions,
 ) -> BatchODEResult:
-    """Solves the system using JAX-based Diffrax solver. Currently not implemented.
+    """Solves the system using JAX-based Diffrax solver.
 
     Args:
         rhs: The callable right-hand side evaluator of the network dynamics.
@@ -146,9 +146,232 @@ def solve_diffrax(
     Returns:
         The BatchODEResult.
     """
-    raise NotImplementedError(
-        "solver.backend='diffrax' is reserved by the YAML schema, but the Diffrax backend "
-        "has not been implemented yet."
+    if options.method != "adaptive":
+        raise ValueError("solver.backend 'diffrax' requires solver.method 'adaptive'.")
+    if options.stop_at_steady_state:
+        warnings.warn(
+            "diffrax backend currently evaluates the full time grid; use scipy RK4/RK45 for early stopping.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    jax, jnp = _require_jax()
+    diffrax = _require_diffrax()
+
+    ax_t = _precompute_diffrax_inputs(
+        external_drive,
+        time,
+        n_ext=layout.n_ext,
+        n_batch=n_batch,
+    )
+    bg_e, bg_i = _precompute_diffrax_background(
+        rhs.background_trace,
+        layout=layout,
+        n_batch=n_batch,
+        time=time,
+    )
+
+    phi_exc_x, phi_exc_y = _transfer_table_arrays(rhs.phi_exc, "phi_exc")
+    phi_inh_x, phi_inh_y = _transfer_table_arrays(rhs.phi_inh, "phi_inh")
+    weights = _prepare_jax_matrix(
+        rhs.weights,
+        jnp,
+        prefer_sparse=options.jax_prefer_sparse,
+        dense_max_mb=options.jax_dense_max_mb,
+    )
+
+    y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=jnp.asarray(time).dtype)
+    run = _make_diffrax_diffeqsolve(
+        jax,
+        jnp,
+        diffrax,
+        solver_name=options.diffrax_solver,
+        store_trajectory=options.store_trajectory,
+    )
+
+    out = run(
+        y0,
+        weights,
+        jnp.asarray(layout.idx_exc, dtype=jnp.int32),
+        jnp.asarray(layout.idx_inh, dtype=jnp.int32),
+        jnp.asarray(layout.idx_ext, dtype=jnp.int32),
+        jnp.asarray(time),
+        jnp.asarray(ax_t),
+        jnp.asarray(bg_e),
+        jnp.asarray(bg_i),
+        jnp.asarray(phi_exc_x),
+        jnp.asarray(phi_exc_y),
+        jnp.asarray(phi_inh_x),
+        jnp.asarray(phi_inh_y),
+        jnp.asarray(float(rhs.tau_exc)),
+        jnp.asarray(float(rhs.tau_inh)),
+    )
+
+    if options.store_trajectory:
+        jax.block_until_ready(out)
+        return pack_trajectory_result(
+            np.asarray(out, dtype=np.float64),
+            layout=layout,
+            time=time,
+            store_trajectory=True,
+        )
+
+    mean, std = out
+    jax.block_until_ready(mean)
+    return pack_summary_result(
+        mean_rates=np.asarray(mean, dtype=np.float64),
+        std_rates=np.asarray(std, dtype=np.float64),
+        layout=layout,
+        time=time,
+    )
+
+
+def _make_diffrax_diffeqsolve(
+    jax,
+    jnp,
+    diffrax,
+    *,
+    solver_name: str,
+    store_trajectory: bool,
+):
+    """Creates a JIT-compiled JAX function to solve the Wilson-Cowan ODEs using Diffrax.
+
+    Args:
+        jax: The jax module.
+        jnp: The jax.numpy module.
+        diffrax: The diffrax module.
+        solver_name: The name of the Diffrax solver to use (e.g., 'tsit5').
+        store_trajectory: Whether to return the full rate trajectories at all time points.
+
+    Returns:
+        A JIT-compiled callable `run` that executes the ODE integration.
+    """
+    def interp_phi(x, xp, fp):
+        return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
+
+    def run(
+        y0,
+        weights,
+        idx_exc,
+        idx_inh,
+        idx_ext,
+        time,
+        ax_t,
+        bg_e,
+        bg_i,
+        phi_exc_x,
+        phi_exc_y,
+        phi_inh_x,
+        phi_inh_y,
+        tau_exc,
+        tau_inh,
+    ):
+        # The forcing traces are linearly interpolated between simulation grid points.
+        # This differs from RK4 left/mid/right sampling and may not be numerically identical.
+        ax_interp = diffrax.LinearInterpolation(time, ax_t)
+        bg_e_interp = diffrax.LinearInterpolation(time, bg_e)
+        bg_i_interp = diffrax.LinearInterpolation(time, bg_i)
+
+        def vector_field(t, y, args):
+            ax = ax_interp.evaluate(t)
+            curr_bg_e = bg_e_interp.evaluate(t)
+            curr_bg_i = bg_i_interp.evaluate(t)
+
+            sources = jnp.zeros((weights.shape[1], y.shape[1]), dtype=y.dtype)
+            sources = sources.at[idx_exc, :].set(y[idx_exc, :])
+            sources = sources.at[idx_inh, :].set(y[idx_inh, :])
+            sources = sources.at[idx_ext, :].set(ax)
+
+            mu = weights @ sources
+            dy = jnp.zeros_like(y)
+            dy = dy.at[idx_exc, :].set(
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y))
+                / tau_exc
+            )
+            dy = dy.at[idx_inh, :].set(
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y))
+                / tau_inh
+            )
+            return dy
+
+        term = diffrax.ODETerm(vector_field)
+        if solver_name == "tsit5":
+            solver = diffrax.Tsit5()
+        else:
+            raise ValueError(f"Unsupported diffrax solver: {solver_name}")
+        stepsize_controller = diffrax.ConstantStepSize()
+        dt0 = time[1] - time[0]
+        saveat = diffrax.SaveAt(ts=time)
+
+        sol = diffrax.diffeqsolve(
+            term,
+            solver,
+            t0=time[0],
+            t1=time[-1],
+            dt0=dt0,
+            y0=y0,
+            saveat=saveat,
+            stepsize_controller=stepsize_controller,
+        )
+
+        y_all = sol.ys
+        if store_trajectory:
+            return y_all
+        
+        tail = y_all[int(time.shape[0] * 2 / 3) :, :, :]
+        return jnp.mean(tail, axis=0), jnp.std(tail, axis=0)
+
+    return jax.jit(run)
+
+
+def _precompute_diffrax_inputs(
+    external_drive: ExternalDrive,
+    time: FloatArray,
+    *,
+    n_ext: int,
+    n_batch: int,
+) -> FloatArray:
+    """Precompute deterministic forcing traces for Diffrax.
+
+    External drive is treated as a pre-sampled deterministic input,
+    not as a Diffrax-native stochastic process.
+    """
+    ax_t = []
+    for t in time:
+        ax_t.append(validate_external_drive_value(external_drive(float(t)), n_ext=n_ext, n_batch=n_batch))
+    return np.stack(ax_t)
+
+
+def _precompute_diffrax_background(
+    trace,
+    *,
+    layout: NetworkLayout,
+    n_batch: int,
+    time: FloatArray,
+) -> tuple[FloatArray, FloatArray]:
+    """Precompute deterministic forcing traces for Diffrax.
+
+    Background activity is treated as a pre-sampled deterministic input,
+    not as a Diffrax-native stochastic process.
+    """
+    from v1_simulation.solvers.base import validate_background_trace
+    validate_background_trace(
+        trace,
+        n_exc=layout.n_exc,
+        n_inh=layout.n_inh,
+        n_batch=n_batch,
+        time=time,
+    )
+    if trace is None:
+        n_steps = time.size
+        return (
+            np.zeros((n_steps, layout.n_exc, n_batch), dtype=np.float64),
+            np.zeros((n_steps, layout.n_inh, n_batch), dtype=np.float64),
+        )
+
+    return (
+        np.transpose(trace.exc, (0, 2, 1)),
+        np.transpose(trace.inh, (0, 2, 1)),
     )
 
 
@@ -344,3 +567,15 @@ def _require_jax():
     except ModuleNotFoundError as exc:
         raise RuntimeError("solver.backend='jax-rk4' requested, but jax is not installed.") from exc
     return jax, jnp
+
+
+def _require_diffrax():
+    try:
+        import diffrax
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "solver.backend='diffrax' requested, but diffrax is not installed.\n"
+            "Diffrax backend requires installing the optional JAX dependencies.\n"
+            "Try: pip install -e \".[jax]\""
+        ) from exc
+    return diffrax

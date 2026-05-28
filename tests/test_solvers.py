@@ -104,6 +104,106 @@ class WilsonCowanSolverTests(unittest.TestCase):
                 )
 
 
+class DiffraxSolverTests(unittest.TestCase):
+    def test_missing_optional_dependency_raises_runtime_error(self) -> None:
+        network = _tiny_network()
+        with patch("importlib.import_module", side_effect=ModuleNotFoundError("No module named 'diffrax'")):
+            with self.assertRaisesRegex(RuntimeError, "requires installing the optional JAX dependencies"):
+                from v1_simulation.solvers.jax_backend import _require_diffrax
+                _require_diffrax()
+
+    def test_diffrax_shape_and_finite_smoke_test(self) -> None:
+        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        if not is_diffrax_available():
+            self.skipTest("Diffrax not installed")
+
+        network = _tiny_network()
+        time = np.linspace(0.0, 0.05, 11)
+
+        result = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[1.0, 2.0]]),
+            time=time,
+            n_batch=2,
+            solver_config=SolverConfig(backend="diffrax", method="adaptive"),
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=lambda x: np.maximum(x, 0.0),
+            phi_inh=lambda x: np.maximum(x, 0.0),
+        )
+
+        self.assertEqual(result.exc.shape, (2, 3))
+        self.assertEqual(result.inh.shape, (2, 1))
+        self.assertEqual(result.exc_trajectory.shape, (11, 2, 3))
+        self.assertEqual(result.inh_trajectory.shape, (11, 2, 1))
+        
+        self.assertTrue(np.isfinite(result.exc).all())
+        self.assertTrue(np.isfinite(result.inh).all())
+
+    def test_diffrax_determinism(self) -> None:
+        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        if not is_diffrax_available():
+            self.skipTest("Diffrax not installed")
+
+        network = _tiny_network()
+        time = np.linspace(0.0, 0.02, 5)
+
+        def run():
+            return solve_wilson_cowan_batch(
+                network=network,
+                external_drive=lambda _t: np.array([[1.0, 2.0]]),
+                time=time,
+                n_batch=2,
+                solver_config=SolverConfig(backend="diffrax", method="adaptive"),
+                transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+                phi_exc=lambda x: np.maximum(x, 0.0),
+                phi_inh=lambda x: np.maximum(x, 0.0),
+            )
+
+        res1 = run()
+        res2 = run()
+
+        np.testing.assert_allclose(res1.exc, res2.exc)
+        np.testing.assert_allclose(res1.inh, res2.inh)
+
+    def test_diffrax_loose_comparison_with_scipy(self) -> None:
+        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        if not is_diffrax_available():
+            self.skipTest("Diffrax not installed")
+
+        network = _tiny_network()
+        time = np.linspace(0.0, 0.02, 100)
+
+        diffrax_res = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[1.0, 2.0]]),
+            time=time,
+            n_batch=2,
+            solver_config=SolverConfig(backend="diffrax", method="adaptive"),
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=lambda x: np.maximum(x, 0.0),
+            phi_inh=lambda x: np.maximum(x, 0.0),
+        )
+
+        scipy_res = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[1.0, 2.0]]),
+            time=time,
+            n_batch=2,
+            solver_config=SolverConfig(backend="scipy", method="RK4"),
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=lambda x: np.maximum(x, 0.0),
+            phi_inh=lambda x: np.maximum(x, 0.0),
+        )
+
+        # Loose comparison since inputs are linearly interpolated differently
+        np.testing.assert_allclose(
+            diffrax_res.exc,
+            scipy_res.exc,
+            rtol=1e-1,
+            atol=1e-2,
+        )
+
+
 def _tiny_network() -> NetworkState:
     l23 = SheetGeometry(2, 1.0, 0.1)
     l4 = SheetGeometry(1, 1.0, 0.0)
