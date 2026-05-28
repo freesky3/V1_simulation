@@ -226,6 +226,8 @@ def run_bcm_training(
             model_cfg=cfg.model,
             layers_cfg=cfg.model.layers,
             l4_layer=run_network.layout.l4,
+            l4_tunings=run_network.layout.l4_tunings,
+            l4_pref_dirs=run_network.layout.l4_pref_dirs,
         )
 
     time_grid = (

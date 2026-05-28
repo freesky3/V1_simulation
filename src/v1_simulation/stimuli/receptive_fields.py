@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 if TYPE_CHECKING:
-    from v1_simulation.network.geometry import L4
+    from v1_simulation.network.geometry import L4, SheetGeometry
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +165,14 @@ def gabor_bank(
 class L4GaborBank:
     """Lazy Gabor RF bank for an L4 population."""
 
-    def __init__(self, cfg: GaborRFConfig, l4_layer: L4) -> None:
+    def __init__(
+        self,
+        cfg: GaborRFConfig,
+        l4_layer: SheetGeometry | L4,
+        *,
+        l4_tunings: ArrayLike | None = None,
+        l4_pref_dirs: ArrayLike | None = None,
+    ) -> None:
         self.cfg = cfg
         self.l4 = l4_layer
         self.grid = VisualGrid.centered_midpoint(
@@ -173,8 +180,20 @@ class L4GaborBank:
             resolution=cfg.resolution,
         )
 
-        self.is_tuned = np.asarray(l4_layer.tunings) == "T"
-        self.theta = np.nan_to_num(np.asarray(l4_layer.pref_dirs, dtype=float), nan=0.0)
+        if hasattr(l4_layer, "tunings") and hasattr(l4_layer, "pref_dirs"):
+            tunings_array = np.asarray(l4_layer.tunings)
+            pref_dirs_array = np.asarray(l4_layer.pref_dirs)
+        elif hasattr(l4_layer, "is_tuned") and hasattr(l4_layer, "preferred_orientations"):
+            tunings_array = np.where(l4_layer.is_tuned, "T", "U")
+            pref_dirs_array = np.asarray(l4_layer.preferred_orientations)
+        else:
+            if l4_tunings is None or l4_pref_dirs is None:
+                raise ValueError("l4_tunings and l4_pref_dirs are required when l4_layer does not contain tuning information.")
+            tunings_array = np.asarray(l4_tunings)
+            pref_dirs_array = np.asarray(l4_pref_dirs)
+
+        self.is_tuned = np.asarray(tunings_array) == "T"
+        self.theta = np.nan_to_num(np.asarray(pref_dirs_array, dtype=float), nan=0.0)
 
         if np.asarray(l4_layer.coords).shape[0] != len(self.theta):
             raise ValueError("l4_layer coords and pref_dirs must have the same length.")

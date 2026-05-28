@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from scipy.ndimage import gaussian_filter, map_coordinates, zoom
 
 from v1_simulation.data.natural_images import NaturalImageSample, apply_crop
@@ -12,7 +12,7 @@ from v1_simulation.stimuli.receptive_fields import GaborRFConfig, L4GaborBank
 
 if TYPE_CHECKING:
     from v1_simulation.data.natural_images import VanHaterenImageDataset
-    from v1_simulation.network.geometry import L4
+    from v1_simulation.network.geometry import L4, SheetGeometry
 
 
 NormalizationMode = Literal["log-zscore", "zscore", "maxscale"]
@@ -150,12 +150,19 @@ class L4NaturalImageProjector:
     def __init__(
         self,
         *,
-        l4_layer: L4,
+        l4_layer: SheetGeometry | L4,
         rf_cfg: GaborRFConfig,
         drive_cfg: NaturalImageDriveConfig,
+        l4_tunings: ArrayLike | None = None,
+        l4_pref_dirs: ArrayLike | None = None,
     ) -> None:
         self.l4 = l4_layer
-        self.rf_bank = L4GaborBank(rf_cfg, l4_layer)
+        self.rf_bank = L4GaborBank(
+            rf_cfg,
+            l4_layer,
+            l4_tunings=l4_tunings,
+            l4_pref_dirs=l4_pref_dirs,
+        )
         self.drive_cfg = drive_cfg
 
         coords = np.asarray(l4_layer.coords, dtype=float)

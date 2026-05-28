@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from v1_simulation.config.schema import LouvainConfig
 
 
+from tqdm import tqdm
+
+
 def identify_communities(
     activity_trace: ArrayLike,
     config: "LouvainConfig",
@@ -54,7 +57,7 @@ def identify_communities(
     graph = bct.weight_conversion(graph, "normalize")
 
     partitions = np.empty((trace.shape[0], int(config.num_runs)), dtype=np.int64)
-    for run_idx in range(int(config.num_runs)):
+    for run_idx in tqdm(range(int(config.num_runs)), desc="Running Louvain community detection"):
         seed = _next_seed(local_rng)
         labels, _ = bct.community_louvain(graph, gamma=float(config.gamma), seed=seed)
         partitions[:, run_idx] = np.asarray(labels, dtype=np.int64)

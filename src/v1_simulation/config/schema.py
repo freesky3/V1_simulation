@@ -26,6 +26,7 @@ class AnalysisConfig:
     louvain: LouvainConfig = field(default_factory=LouvainConfig)
     active_threshold: float = 1.0e-6
     simulation_id: Optional[str] = None
+    save_plots: bool = True
 
 # ==========================================
 # 2. Background Configuration

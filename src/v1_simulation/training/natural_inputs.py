@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from numpy.typing import ArrayLike
+
 from v1_simulation.data.natural_images import NaturalImageSampler, VanHaterenImageDataset
 from v1_simulation.stimuli.natural import (
     L4NaturalImageProjector,
@@ -14,7 +16,7 @@ from v1_simulation.stimuli.receptive_fields import GaborConfig, GaborRFConfig
 
 if TYPE_CHECKING:
     from v1_simulation.config.schema import LayersConfig, ModelConfig, StimulusConfig, TrainingNaturalImageConfig
-    from v1_simulation.network.geometry import L4
+    from v1_simulation.network.geometry import L4, SheetGeometry
 
 
 def build_natural_image_l4_drive(
@@ -23,7 +25,9 @@ def build_natural_image_l4_drive(
     stimulus_cfg: StimulusConfig | None = None,
     model_cfg: ModelConfig | StimulusConfig | None = None,
     layers_cfg: LayersConfig | None = None,
-    l4_layer: L4,
+    l4_layer: SheetGeometry | L4,
+    l4_tunings: ArrayLike | None = None,
+    l4_pref_dirs: ArrayLike | None = None,
 ) -> tuple[NaturalImageL4Drive, NaturalImageSampler]:
     """Builds the natural image L4 visual drive and sampler for model training.
 
@@ -87,6 +91,8 @@ def build_natural_image_l4_drive(
             periodic=periodic,
             projection_chunk_size=cfg.projection_chunk_size,
         ),
+        l4_tunings=l4_tunings,
+        l4_pref_dirs=l4_pref_dirs,
     )
 
     drive = NaturalImageL4Drive(

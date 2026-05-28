@@ -2,7 +2,7 @@
 
 t_start: 0.0
 t_stop: null
-duration_tau_e: 100.0
+duration_tau_e: 150.0
 dt: null
 dt_tau_i_fraction: 0.3333333333333333
 store_trajectory: true

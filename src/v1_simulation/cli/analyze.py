@@ -41,6 +41,11 @@ def analyze_command(
         "--network-path",
         help="Network checkpoint directory. Defaults to <run_dir>/network.",
     ),
+    plots: Optional[bool] = typer.Option(
+        None,
+        "--plots/--no-plots",
+        help="Whether to save analysis plots. Defaults to config setting.",
+    ),
 ) -> None:
     """Analyze a saved simulation run and write metrics/artifacts."""
 
@@ -49,9 +54,17 @@ def analyze_command(
         config_name=config_name,
         overrides=merge_overrides(overrides, override),
     )
+    if plots is not None:
+        cfg.analysis.save_plots = plots
+
     inputs = load_analysis_inputs_from_run(run_dir, network_path=network_path)
     result = run_analysis(cfg.analysis, inputs)
-    target = write_analysis_result_artifacts(result, output_dir or (run_dir / "analysis"))
+    target = write_analysis_result_artifacts(
+        result,
+        output_dir or (run_dir / "analysis"),
+        save_plots=cfg.analysis.save_plots,
+        num_surrogates=cfg.analysis.num_surrogates,
+    )
 
     typer.echo(f"Saved analysis: {target}")
     typer.echo(

@@ -9,6 +9,7 @@ from v1_simulation.analysis.metrics import (
 )
 from v1_simulation.analysis.osi import compute_osi
 from v1_simulation.analysis.pipeline import ensemble_activity_trace, run_analysis, select_analysis_neuron_indices
+from v1_simulation.analysis.plotting import generate_and_save_all_analysis_plots
 from v1_simulation.analysis.spatial import (
     cluster_spatial_metrics,
     distance_matrix,
@@ -30,6 +31,7 @@ __all__ = [
     "cosine_similarity_matrix",
     "distance_matrix",
     "ensemble_activity_trace",
+    "generate_and_save_all_analysis_plots",
     "generate_grid_positions",
     "identify_communities",
     "labels_array",

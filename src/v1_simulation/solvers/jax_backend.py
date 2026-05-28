@@ -26,6 +26,10 @@ def is_diffrax_available() -> bool:
     return importlib.util.find_spec("diffrax") is not None
 
 
+_jax_rk4_solve_cache = {}
+_diffrax_solve_cache = {}
+
+
 def solve_jax_rk4(
     *,
     rhs,
@@ -57,7 +61,7 @@ def solve_jax_rk4(
             stacklevel=2,
         )
 
-    jax, jnp = _require_jax()
+    jax, jnp = _require_jax("jax-rk4")
     ax_left, ax_mid, ax_right = _precompute_rk4_inputs(
         external_drive,
         time,
@@ -80,7 +84,10 @@ def solve_jax_rk4(
     )
 
     y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=jnp.asarray(time).dtype)
-    run = _make_jax_rk4(jax, jnp, store_trajectory=options.store_trajectory)
+    cache_key = options.store_trajectory
+    if cache_key not in _jax_rk4_solve_cache:
+        _jax_rk4_solve_cache[cache_key] = _make_jax_rk4(jax, jnp, store_trajectory=options.store_trajectory)
+    run = _jax_rk4_solve_cache[cache_key]
     out = run(
         y0,
         weights,
@@ -155,7 +162,7 @@ def solve_diffrax(
             stacklevel=2,
         )
 
-    jax, jnp = _require_jax()
+    jax, jnp = _require_jax("diffrax")
     diffrax = _require_diffrax()
 
     ax_t = _precompute_diffrax_inputs(
@@ -181,13 +188,16 @@ def solve_diffrax(
     )
 
     y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=jnp.asarray(time).dtype)
-    run = _make_diffrax_diffeqsolve(
-        jax,
-        jnp,
-        diffrax,
-        solver_name=options.diffrax_solver,
-        store_trajectory=options.store_trajectory,
-    )
+    cache_key = (options.diffrax_solver, options.store_trajectory)
+    if cache_key not in _diffrax_solve_cache:
+        _diffrax_solve_cache[cache_key] = _make_diffrax_diffeqsolve(
+            jax,
+            jnp,
+            diffrax,
+            solver_name=options.diffrax_solver,
+            store_trajectory=options.store_trajectory,
+        )
+    run = _diffrax_solve_cache[cache_key]
 
     out = run(
         y0,
@@ -560,12 +570,16 @@ def _prepare_jax_matrix(matrix, jnp, *, prefer_sparse: bool, dense_max_mb: float
     return jnp.asarray(matrix.toarray() if scipy_sparse.issparse(matrix) else matrix)
 
 
-def _require_jax():
+def _require_jax(backend_name: str = "jax-rk4"):
     try:
         import jax
         import jax.numpy as jnp
     except ModuleNotFoundError as exc:
-        raise RuntimeError("solver.backend='jax-rk4' requested, but jax is not installed.") from exc
+        raise RuntimeError(
+            f"solver.backend='{backend_name}' requested, but jax is not installed.\n"
+            f"This backend requires installing the optional JAX dependencies.\n"
+            "Try: pip install -e \".[jax]\""
+        ) from exc
     return jax, jnp
 
 

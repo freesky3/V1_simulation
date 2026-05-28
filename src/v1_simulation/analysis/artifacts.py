@@ -43,7 +43,13 @@ def load_analysis_inputs_from_run(
     )
 
 
-def write_analysis_result_artifacts(result: AnalysisResult, output_dir: str | Path) -> Path:
+def write_analysis_result_artifacts(
+    result: AnalysisResult,
+    output_dir: str | Path,
+    *,
+    save_plots: bool = True,
+    num_surrogates: int = 10000,
+) -> Path:
     """Persist arrays, diagnostics, and tabular metrics from an analysis result."""
 
     target = Path(output_dir)
@@ -73,6 +79,10 @@ def write_analysis_result_artifacts(result: AnalysisResult, output_dir: str | Pa
     rows = diagnostics.get("ensemble_metrics", [])
     if isinstance(summary, dict) and isinstance(rows, list):
         write_analysis_metrics(summary, rows, target)
+
+    if save_plots:
+        from v1_simulation.analysis.plotting import generate_and_save_all_analysis_plots
+        generate_and_save_all_analysis_plots(result, target, num_surrogates=num_surrogates)
 
     return target
 
