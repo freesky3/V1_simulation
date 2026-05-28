@@ -14,6 +14,7 @@ from v1_simulation.solvers import solve_wilson_cowan_batch
 from v1_simulation.solvers.base import NetworkLayout, SolverOptions
 from v1_simulation.solvers.scipy_backend import solve_scipy
 from v1_simulation.solvers.wilson_cowan import WilsonCowanRHS
+from v1_simulation.transfer.siegert import TransferTable
 
 
 class SolverConfigTests(unittest.TestCase):
@@ -106,8 +107,7 @@ class WilsonCowanSolverTests(unittest.TestCase):
 
 class DiffraxSolverTests(unittest.TestCase):
     def test_missing_optional_dependency_raises_runtime_error(self) -> None:
-        network = _tiny_network()
-        with patch("importlib.import_module", side_effect=ModuleNotFoundError("No module named 'diffrax'")):
+        with patch.dict("sys.modules", {"diffrax": None}):
             with self.assertRaisesRegex(RuntimeError, "requires installing the optional JAX dependencies"):
                 from v1_simulation.solvers.jax_backend import _require_diffrax
                 _require_diffrax()
@@ -120,6 +120,11 @@ class DiffraxSolverTests(unittest.TestCase):
         network = _tiny_network()
         time = np.linspace(0.0, 0.05, 11)
 
+        phi_table = TransferTable(
+            np.linspace(-100.0, 100.0, 1000),
+            np.maximum(np.linspace(-100.0, 100.0, 1000), 0.0)
+        )
+
         result = solve_wilson_cowan_batch(
             network=network,
             external_drive=lambda _t: np.array([[1.0, 2.0]]),
@@ -127,8 +132,8 @@ class DiffraxSolverTests(unittest.TestCase):
             n_batch=2,
             solver_config=SolverConfig(backend="diffrax", method="adaptive"),
             transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
-            phi_exc=lambda x: np.maximum(x, 0.0),
-            phi_inh=lambda x: np.maximum(x, 0.0),
+            phi_exc=phi_table,
+            phi_inh=phi_table,
         )
 
         self.assertEqual(result.exc.shape, (2, 3))
@@ -147,6 +152,11 @@ class DiffraxSolverTests(unittest.TestCase):
         network = _tiny_network()
         time = np.linspace(0.0, 0.02, 5)
 
+        phi_table = TransferTable(
+            np.linspace(-100.0, 100.0, 1000),
+            np.maximum(np.linspace(-100.0, 100.0, 1000), 0.0)
+        )
+
         def run():
             return solve_wilson_cowan_batch(
                 network=network,
@@ -155,8 +165,8 @@ class DiffraxSolverTests(unittest.TestCase):
                 n_batch=2,
                 solver_config=SolverConfig(backend="diffrax", method="adaptive"),
                 transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
-                phi_exc=lambda x: np.maximum(x, 0.0),
-                phi_inh=lambda x: np.maximum(x, 0.0),
+                phi_exc=phi_table,
+                phi_inh=phi_table,
             )
 
         res1 = run()
@@ -173,6 +183,11 @@ class DiffraxSolverTests(unittest.TestCase):
         network = _tiny_network()
         time = np.linspace(0.0, 0.02, 100)
 
+        phi_table = TransferTable(
+            np.linspace(-100.0, 100.0, 1000),
+            np.maximum(np.linspace(-100.0, 100.0, 1000), 0.0)
+        )
+
         diffrax_res = solve_wilson_cowan_batch(
             network=network,
             external_drive=lambda _t: np.array([[1.0, 2.0]]),
@@ -180,8 +195,8 @@ class DiffraxSolverTests(unittest.TestCase):
             n_batch=2,
             solver_config=SolverConfig(backend="diffrax", method="adaptive"),
             transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
-            phi_exc=lambda x: np.maximum(x, 0.0),
-            phi_inh=lambda x: np.maximum(x, 0.0),
+            phi_exc=phi_table,
+            phi_inh=phi_table,
         )
 
         scipy_res = solve_wilson_cowan_batch(
@@ -191,8 +206,8 @@ class DiffraxSolverTests(unittest.TestCase):
             n_batch=2,
             solver_config=SolverConfig(backend="scipy", method="RK4"),
             transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
-            phi_exc=lambda x: np.maximum(x, 0.0),
-            phi_inh=lambda x: np.maximum(x, 0.0),
+            phi_exc=phi_table,
+            phi_inh=phi_table,
         )
 
         # Loose comparison since inputs are linearly interpolated differently

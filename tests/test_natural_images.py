@@ -54,6 +54,21 @@ def test_van_hateren_dataset_scanning(tmp_path) -> None:
         dataset.iter_paths(limit=-1)
 
 
+def test_van_hateren_dataset_real() -> None:
+    from pathlib import Path
+    from v1_simulation.data.natural_images import VAN_HATEREN_SHAPE
+    real_path = Path("data/vanhateren_iml")
+    if not real_path.exists() or not list(real_path.glob("*.iml")):
+        pytest.skip("Real Van Hateren dataset not found at data/vanhateren_iml")
+
+    dataset = VanHaterenImageDataset(real_path)
+    assert len(dataset.paths) > 0
+    img = dataset.read(dataset.paths[0])
+    assert img.shape == VAN_HATEREN_SHAPE
+    assert np.issubdtype(img.dtype, np.uint16)
+    assert np.any(img > 0)  # Real image should not be completely empty/all-zero
+
+
 def test_natural_image_sampler(tmp_path) -> None:
     (tmp_path / "im1.iml").write_bytes(b"\x00" * 24)
     (tmp_path / "im2.iml").write_bytes(b"\x00" * 24)

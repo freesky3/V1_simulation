@@ -10,7 +10,7 @@ wheels/
 .venv
 
 runs/
-/data/
+/data/vanhateren_iml
 
 *.npy
 *.npz
