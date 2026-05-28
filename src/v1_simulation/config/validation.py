@@ -24,6 +24,12 @@ def _finite_float(value: float, path: str) -> float:
     return value
 
 
+def _optional_finite_float(value: float | None, path: str) -> float | None:
+    if value is None:
+        return None
+    return _finite_float(value, path)
+
+
 def _validate_transfer_config(trans: TransferConfig, path: str) -> None:
     if trans.kind != "siegert":
         raise ValueError(f"{path}.kind must be 'siegert', got {trans.kind!r}")
@@ -237,19 +243,44 @@ def validate_config(cfg: RootConfig) -> None:
             raise ValueError(f"training.bcm.epochs must be positive, got {bcm.epochs}")
         if bcm.batch_size <= 0:
             raise ValueError(f"training.bcm.batch_size must be positive, got {bcm.batch_size}")
-        if bcm.eta <= 0.0:
-            raise ValueError(f"training.bcm.eta must be positive, got {bcm.eta}")
-        if not (0.0 < bcm.theta_beta < 1.0):
-            raise ValueError(f"training.bcm.theta_beta must be in (0.0, 1.0), got {bcm.theta_beta}")
-        if bcm.theta_eps <= 0.0:
+        if _finite_float(bcm.eta, "training.bcm.eta") < 0.0:
+            raise ValueError(f"training.bcm.eta must be non-negative, got {bcm.eta}")
+        if not (0.0 < _finite_float(bcm.theta_beta, "training.bcm.theta_beta") <= 1.0):
+            raise ValueError(f"training.bcm.theta_beta must be in (0.0, 1.0], got {bcm.theta_beta}")
+        if _finite_float(bcm.theta_eps, "training.bcm.theta_eps") <= 0.0:
             raise ValueError(f"training.bcm.theta_eps must be positive, got {bcm.theta_eps}")
-        if bcm.theta_init <= 0.0:
+        if bcm.theta_update_order not in {"pre", "post"}:
+            raise ValueError(
+                "training.bcm.theta_update_order must be 'pre' or 'post', "
+                f"got {bcm.theta_update_order!r}"
+            )
+        theta_init = _optional_finite_float(bcm.theta_init, "training.bcm.theta_init")
+        if theta_init is not None and theta_init <= 0.0:
             raise ValueError(f"training.bcm.theta_init must be positive, got {bcm.theta_init}")
-        if bcm.theta_floor <= 0.0:
+        theta_floor = _optional_finite_float(bcm.theta_floor, "training.bcm.theta_floor")
+        if theta_floor is not None and theta_floor <= 0.0:
             raise ValueError(f"training.bcm.theta_floor must be positive, got {bcm.theta_floor}")
-        if bcm.w_max <= 0.0:
+        w_max = _optional_finite_float(bcm.w_max, "training.bcm.w_max")
+        if w_max is not None and w_max <= 0.0:
             raise ValueError(f"training.bcm.w_max must be positive, got {bcm.w_max}")
-        if bcm.row_sum_max_scale <= 0.0:
-            raise ValueError(f"training.bcm.row_sum_max_scale must be positive, got {bcm.row_sum_max_scale}")
+        row_sum_scale = _optional_finite_float(bcm.row_sum_max_scale, "training.bcm.row_sum_max_scale")
+        if row_sum_scale is not None and row_sum_scale < 0.0:
+            raise ValueError(
+                f"training.bcm.row_sum_max_scale must be non-negative, got {bcm.row_sum_max_scale}"
+            )
         if bcm.save_every <= 0:
             raise ValueError(f"training.bcm.save_every must be positive, got {bcm.save_every}")
+        if _finite_float(bcm.steady_state_abs_tol, "training.bcm.steady_state_abs_tol") <= 0.0:
+            raise ValueError(
+                f"training.bcm.steady_state_abs_tol must be positive, got {bcm.steady_state_abs_tol}"
+            )
+        if _finite_float(bcm.steady_state_rel_tol, "training.bcm.steady_state_rel_tol") <= 0.0:
+            raise ValueError(
+                f"training.bcm.steady_state_rel_tol must be positive, got {bcm.steady_state_rel_tol}"
+            )
+        if bcm.steady_state_window <= 0:
+            raise ValueError(f"training.bcm.steady_state_window must be positive, got {bcm.steady_state_window}")
+        if _finite_float(bcm.steady_state_min_tau, "training.bcm.steady_state_min_tau") < 0.0:
+            raise ValueError(
+                f"training.bcm.steady_state_min_tau must be non-negative, got {bcm.steady_state_min_tau}"
+            )

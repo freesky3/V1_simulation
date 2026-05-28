@@ -26,7 +26,15 @@ from v1_simulation.network.empirical import (
 )
 from v1_simulation.network.geometry import L2_3, L4, SheetGeometry
 from v1_simulation.network.state import NetworkState, PopulationLayout
-from v1_simulation.network.weights import WeightSpec, sample_weights
+from v1_simulation.network.weights import (
+    WeightSpec,
+    as_connection_mask,
+    as_dense_weights,
+    limit_row_sums,
+    row_sums,
+    sample_weights,
+    validate_indices,
+)
 
 __all__ = [
     "ConnectionBlock",
@@ -44,16 +52,21 @@ __all__ = [
     "SheetGeometry",
     "SpatialKernel",
     "WeightSpec",
+    "as_connection_mask",
+    "as_dense_weights",
     "assign_l23_types",
     "build_network_spec",
     "build_network_state",
     "build_population_layout",
     "derive_connection_probabilities",
     "derive_population_counts",
+    "limit_row_sums",
     "make_network_rngs",
     "probability_block",
     "probability_matrix",
+    "row_sums",
     "sample_connectivity",
     "sample_weights",
     "uniform_grid_indices",
+    "validate_indices",
 ]

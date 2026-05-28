@@ -448,10 +448,10 @@ class TrainingBCMConfig:
     theta_beta: float = 0.01
     theta_eps: float = 1.0e-6
     theta_update_order: str = "pre"
-    theta_init: float = 1.0
-    theta_floor: float = 1.0e-3
-    w_max: float = 30.0
-    row_sum_max_scale: float = 1.05
+    theta_init: Optional[float] = 1.0
+    theta_floor: Optional[float] = 1.0e-3
+    w_max: Optional[float] = 30.0
+    row_sum_max_scale: Optional[float] = 1.05
     save_every: int = 100
     dynamic_steady_state: bool = True
     steady_state_abs_tol: float = 1.0e-3
