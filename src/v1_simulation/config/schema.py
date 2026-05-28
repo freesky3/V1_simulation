@@ -11,7 +11,10 @@ class LouvainConfig:
     thr_prop: float = 0.2
     gamma: float = 1.0
     num_runs: int = 1000
+    consensus_tau: float = 0.7
     consensus_reps: int = 200
+    min_module_degree: float = 3.0
+    min_cluster_size: int = 5
 
 @dataclass
 class AnalysisConfig:

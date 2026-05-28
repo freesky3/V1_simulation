@@ -83,24 +83,32 @@ def validate_config(cfg: RootConfig) -> None:
     analysis = cfg.analysis
     if analysis.num_surrogates <= 0:
         raise ValueError(f"analysis.num_surrogates must be positive, got {analysis.num_surrogates}")
-    if not (0.0 <= analysis.center_side_fraction <= 1.0):
-        raise ValueError(f"analysis.center_side_fraction must be in [0.0, 1.0], got {analysis.center_side_fraction}")
+    if not (0.0 < analysis.center_side_fraction <= 1.0):
+        raise ValueError(f"analysis.center_side_fraction must be in (0.0, 1.0], got {analysis.center_side_fraction}")
     if not (0.0 <= analysis.osi_threshold <= 1.0):
         raise ValueError(f"analysis.osi_threshold must be in [0.0, 1.0], got {analysis.osi_threshold}")
-    if not (0.0 <= analysis.random_sample_fraction <= 1.0):
-        raise ValueError(f"analysis.random_sample_fraction must be in [0.0, 1.0], got {analysis.random_sample_fraction}")
+    if not (0.0 < analysis.random_sample_fraction <= 1.0):
+        raise ValueError(f"analysis.random_sample_fraction must be in (0.0, 1.0], got {analysis.random_sample_fraction}")
     if analysis.active_threshold <= 0.0:
         raise ValueError(f"analysis.active_threshold must be positive, got {analysis.active_threshold}")
     
     louvain = analysis.louvain
-    if not (0.0 <= louvain.thr_prop <= 1.0):
-        raise ValueError(f"analysis.louvain.thr_prop must be in [0.0, 1.0], got {louvain.thr_prop}")
+    if not (0.0 < louvain.thr_prop <= 1.0):
+        raise ValueError(f"analysis.louvain.thr_prop must be in (0.0, 1.0], got {louvain.thr_prop}")
     if louvain.gamma <= 0.0:
         raise ValueError(f"analysis.louvain.gamma must be positive, got {louvain.gamma}")
     if louvain.num_runs <= 0:
         raise ValueError(f"analysis.louvain.num_runs must be positive, got {louvain.num_runs}")
+    if not (0.0 <= louvain.consensus_tau <= 1.0):
+        raise ValueError(f"analysis.louvain.consensus_tau must be in [0.0, 1.0], got {louvain.consensus_tau}")
     if louvain.consensus_reps <= 0:
         raise ValueError(f"analysis.louvain.consensus_reps must be positive, got {louvain.consensus_reps}")
+    if louvain.min_module_degree < 0.0:
+        raise ValueError(
+            f"analysis.louvain.min_module_degree must be non-negative, got {louvain.min_module_degree}"
+        )
+    if louvain.min_cluster_size <= 0:
+        raise ValueError(f"analysis.louvain.min_cluster_size must be positive, got {louvain.min_cluster_size}")
 
     # 3. Background Config
     bg = cfg.background

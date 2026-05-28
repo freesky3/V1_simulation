@@ -9,6 +9,9 @@ louvain:
   thr_prop: 0.2
   gamma: 1.0
   num_runs: 1000
+  consensus_tau: 0.7
   consensus_reps: 200
+  min_module_degree: 3.0
+  min_cluster_size: 5
 active_threshold: 1.0e-6
 simulation_id: null
