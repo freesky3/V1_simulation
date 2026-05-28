@@ -17,11 +17,21 @@ from v1_simulation.training.plasticity import (
     update_efferent_excitatory_weights,
     update_excitatory_block,
 )
+from v1_simulation.training.trainer import (
+    BCMTrainer,
+    BCMTrainingState,
+    BatchTrainingLog,
+    TrainingResult,
+)
 
 __all__ = [
     "BCMRowSumLimits",
     "BCMThetaState",
+    "BCMTrainer",
+    "BCMTrainingState",
     "BCMTrainingStepResult",
+    "BatchTrainingLog",
+    "TrainingResult",
     "bcm_delta",
     "bcm_gain",
     "bcm_training_step",
