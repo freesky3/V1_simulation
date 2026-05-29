@@ -52,6 +52,7 @@ def update_efferent_excitatory_weights(
     *,
     row_sum_max_E: float | ArrayLike | None = None,
     row_sum_max_I: float | ArrayLike | None = None,
+    _cached_topology: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.float64] | sparse.csr_matrix:
     """Updates the efferent weights originating from excitatory source neurons.
 
@@ -70,6 +71,9 @@ def update_efferent_excitatory_weights(
         config: The BCM configuration settings.
         row_sum_max_E: Optional row-sum limit for target E neurons.
         row_sum_max_I: Optional row-sum limit for target I neurons.
+        _cached_topology: Optional pre-computed dense boolean topology mask.
+            When provided, skips redundant dense conversions and validation
+            for hot-loop performance.
 
     Returns:
         The updated weights matrix (dense array or sparse matrix matching input).
@@ -80,9 +84,15 @@ def update_efferent_excitatory_weights(
 
     validate_bcm_config(config)
     input_is_sparse = sparse.issparse(weights)
-    W = as_dense_weights(weights)
-    topology = as_connection_mask(connection_mask, W.shape)
-    _validate_weights_follow_topology(W, topology)
+
+    if _cached_topology is not None:
+        # Fast path: caller guarantees weights are dense and topology is valid.
+        W = np.asarray(weights, dtype=float)
+        topology = _cached_topology
+    else:
+        W = as_dense_weights(weights)
+        topology = as_connection_mask(connection_mask, W.shape)
+        _validate_weights_follow_topology(W, topology)
 
     idx_E_arr = validate_indices("idx_E", idx_E, W.shape[0])
     idx_I_arr = validate_indices("idx_I", idx_I, W.shape[0], allow_empty=True)
@@ -95,6 +105,7 @@ def update_efferent_excitatory_weights(
     target_E_source_E = np.ix_(idx_E_arr, idx_E_arr)
     target_I_source_E = np.ix_(idx_I_arr, idx_E_arr)
 
+    # Extract dense sub-blocks once and pass directly to avoid re-densification
     updated[target_E_source_E] = update_excitatory_block(
         weights=W[target_E_source_E],
         connection_mask=topology[target_E_source_E],
@@ -103,6 +114,7 @@ def update_efferent_excitatory_weights(
         theta=theta.E,
         config=config,
         row_sum_max=row_sum_max_E,
+        _skip_densify=True,
     )
     updated[target_I_source_E] = update_excitatory_block(
         weights=W[target_I_source_E],
@@ -112,6 +124,7 @@ def update_efferent_excitatory_weights(
         theta=theta.I,
         config=config,
         row_sum_max=row_sum_max_I,
+        _skip_densify=True,
     )
 
     if input_is_sparse:
@@ -128,6 +141,7 @@ def update_excitatory_block(
     theta: ArrayLike,
     config: TrainingBCMConfig,
     row_sum_max: float | ArrayLike | None = None,
+    _skip_densify: bool = False,
 ) -> NDArray[np.float64]:
     """Applies BCM update rule and row-sum limits to a single target/source sub-block.
 
@@ -139,14 +153,20 @@ def update_excitatory_block(
         theta: Post-synaptic threshold vector.
         config: The BCM configuration settings.
         row_sum_max: Optional row-sum limit for the sub-block.
+        _skip_densify: If True, skip as_dense_weights/as_connection_mask copies
+            (caller guarantees inputs are already dense numpy arrays).
 
     Returns:
         The updated sub-block weights as a dense 2D float array.
     """
 
     validate_bcm_config(config)
-    W = as_dense_weights(weights, name="weights")
-    topology = as_connection_mask(connection_mask, W.shape)
+    if _skip_densify:
+        W = np.asarray(weights, dtype=float)
+        topology = np.asarray(connection_mask, dtype=bool)
+    else:
+        W = as_dense_weights(weights, name="weights")
+        topology = as_connection_mask(connection_mask, W.shape)
 
     delta = bcm_delta(
         x=x,
@@ -235,6 +255,7 @@ def bcm_training_step(
     theta: BCMThetaState | None,
     config: TrainingBCMConfig,
     row_sum_limits: BCMRowSumLimits | None = None,
+    _cached_topology: NDArray[np.bool_] | None = None,
 ) -> BCMTrainingStepResult:
     """Runs a single schema-configured BCM training step.
 
@@ -250,6 +271,7 @@ def bcm_training_step(
         theta: The current BCMThetaState. If None, initializes the thresholds.
         config: The BCM configuration settings.
         row_sum_limits: Optional BCMRowSumLimits.
+        _cached_topology: Optional pre-computed dense boolean topology mask.
 
     Returns:
         A BCMTrainingStepResult containing the updated network state, thresholds, and flag.
@@ -285,6 +307,7 @@ def bcm_training_step(
         config=config,
         row_sum_max_E=limits.target_E_source_E,
         row_sum_max_I=limits.target_I_source_E,
+        _cached_topology=_cached_topology,
     )
 
     if config.theta_update_order == "post":

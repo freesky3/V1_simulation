@@ -71,7 +71,22 @@ class BCMTrainer:
         validate_bcm_config(config, include_loop_fields=True)
         self.config = config
         self.row_sum_limits = make_bcm_row_sum_limits(network, config)
-        self.state = BCMTrainingState(network=network)
+        # Convert weights to dense once upfront to avoid CSR↔dense round trips
+        # every batch during training. Checkpointing converts back to CSR on save.
+        if sparse.issparse(network.weights):
+            dense_network = NetworkState(
+                layout=network.layout,
+                connectivity=network.connectivity,
+                weights=network.weights.toarray(),
+                source=network.source,
+            )
+        else:
+            dense_network = network
+        self.state = BCMTrainingState(network=dense_network)
+        # Cache the dense topology mask once to avoid CSR→dense conversion
+        # and _validate_weights_follow_topology on every batch.
+        conn = network.connectivity
+        self._cached_topology = conn.toarray().astype(bool) if sparse.issparse(conn) else np.asarray(conn, dtype=bool)
 
     def train_batch(
         self,
@@ -108,6 +123,7 @@ class BCMTrainer:
             theta=self.state.theta,
             config=self.config,
             row_sum_limits=self.row_sum_limits,
+            _cached_topology=self._cached_topology,
         )
         self.state.network = result.network
         self.state.theta = result.theta

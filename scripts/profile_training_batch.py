@@ -141,7 +141,8 @@ def main():
     print(f"  Built in {perf_counter() - t0:.2f}s")
     print(f"  n_E={network.layout.n_E}, n_I={network.layout.n_I}, "
           f"n_X={network.layout.n_X}")
-    print(f"  Weights: shape={network.weights.shape}, nnz={network.weights.nnz}")
+    nnz = network.weights.nnz if hasattr(network.weights, 'nnz') else int(np.count_nonzero(network.weights))
+    print(f"  Weights: shape={network.weights.shape}, nnz={nnz}")
     print()
 
     # ---- Build natural image drive + sampler ----
@@ -205,6 +206,18 @@ def main():
 
     # ---- Create trainer ----
     trainer = BCMTrainer(cfg.training.bcm, network)
+
+    # ---- Preload Gabor projection cache ----
+    print("Preloading Gabor projection cache...")
+    t0 = perf_counter()
+    # Gather all unique samples across our profiled batches
+    all_samples = []
+    for b in batches:
+        all_samples.extend(b)
+    natural_drive.preload_cache(list(set(all_samples)))
+    cache_time = perf_counter() - t0
+    print(f"  Preloaded {len(set(all_samples))} unique samples in {cache_time:.2f}s")
+    print()
 
     # ---- Profile 3 batches ----
     timer = TimingRecord()

@@ -479,6 +479,8 @@ def _make_diffrax_diffeqsolve(
         term = diffrax.ODETerm(vector_field)
         if solver_name == "tsit5":
             solver = diffrax.Tsit5()
+        elif solver_name == "heun":
+            solver = diffrax.Heun()
         else:
             raise ValueError(f"Unsupported diffrax solver: {solver_name}")
         stepsize_controller = diffrax.ConstantStepSize()
@@ -509,7 +511,10 @@ def _make_diffrax_diffeqsolve(
         if tail_points > 1:
             return jnp.mean(y_all, axis=0), jnp.std(y_all, axis=0)
         else:
-            return y_all, jnp.zeros_like(y_all)
+            # SaveAt(t1=True) returns ys with shape (1, n_rates, n_batch).
+            # Squeeze the leading singleton so downstream gets (n_rates, n_batch).
+            y_final = y_all[0]
+            return y_final, jnp.zeros_like(y_final)
 
     return jax.jit(run)
 

@@ -1,0 +1,13 @@
+# @package solver
+
+backend: diffrax
+method: adaptive
+
+diffrax:
+  solver: heun
+  steady_state_tail_points: 1
+
+jax:
+  prefer_sparse: false
+  dense_max_mb: 512.0
+  dtype: float32

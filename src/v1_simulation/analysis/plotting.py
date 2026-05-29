@@ -5,6 +5,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+# Safely handle Colab/Jupyter inherited MPLBACKEND environment variable
+if os.environ.get('MPLBACKEND') == 'module://matplotlib_inline.backend_inline':
+    try:
+        import matplotlib_inline
+    except ImportError:
+        os.environ['MPLBACKEND'] = 'Agg'
+
 import matplotlib
 try:
     import matplotlib.pyplot as plt

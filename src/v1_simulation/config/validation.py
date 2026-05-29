@@ -193,10 +193,18 @@ def validate_config(cfg: RootConfig) -> None:
         raise ValueError(f"solver.backend must be 'scipy', 'jax-rk4', or 'diffrax', got '{sol.backend}'")
     _validate_solver_method(sol.backend, sol.method)
     _validate_transfer_config(sol.transfer, "solver.transfer")
-    if sol.jax is not None and sol.jax.dense_max_mb <= 0.0:
-        raise ValueError(f"solver.jax.dense_max_mb must be positive, got {sol.jax.dense_max_mb}")
-    if sol.diffrax is not None and sol.diffrax.solver not in {"tsit5"}:
-        raise ValueError(f"solver.diffrax.solver must be 'tsit5', got {sol.diffrax.solver!r}")
+    if sol.jax is not None:
+        if sol.jax.dense_max_mb <= 0.0:
+            raise ValueError(f"solver.jax.dense_max_mb must be positive, got {sol.jax.dense_max_mb}")
+        if sol.jax.dtype not in {"float32", "float64"}:
+            raise ValueError(f"solver.jax.dtype must be 'float32' or 'float64', got {sol.jax.dtype!r}")
+    if sol.diffrax is not None:
+        if sol.diffrax.solver not in {"tsit5", "heun"}:
+            raise ValueError(f"solver.diffrax.solver must be 'tsit5' or 'heun', got {sol.diffrax.solver!r}")
+        if sol.diffrax.steady_state_tail_points <= 0:
+            raise ValueError(
+                f"solver.diffrax.steady_state_tail_points must be positive, got {sol.diffrax.steady_state_tail_points}"
+            )
 
     # 7. Simulation Config
     sim = cfg.simulation

@@ -101,12 +101,19 @@ class PopulationLayout:
 class NetworkState:
     layout: PopulationLayout
     connectivity: sparse.csr_matrix
-    weights: sparse.csr_matrix
+    weights: sparse.csr_matrix | NDArray[np.float64]
     source: Mapping[str, Any] = field(default_factory=lambda: {"mode": "sampled", "path": None})
 
     def __post_init__(self) -> None:
         connectivity = sparse.csr_matrix(self.connectivity, dtype=bool)
-        weights = sparse.csr_matrix(self.weights, dtype=float)
+        # Accept both sparse and dense weights to avoid costly CSR↔dense
+        # round trips during training loops.
+        if sparse.issparse(self.weights):
+            weights = sparse.csr_matrix(self.weights, dtype=float)
+        else:
+            weights = np.asarray(self.weights, dtype=float)
+            if weights.ndim != 2:
+                raise ValueError("weights must be a 2D matrix.")
         if connectivity.shape != self.layout.shape:
             raise ValueError(
                 f"connectivity shape {connectivity.shape} does not match layout shape {self.layout.shape}."

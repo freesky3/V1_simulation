@@ -5,7 +5,7 @@ method: adaptive
 
 diffrax:
   solver: tsit5
-  steady_state_tail_points: 1
+  steady_state_tail_points: 60
 
 jax:
   prefer_sparse: false
