@@ -102,6 +102,8 @@ class SolverOptions:
     jax_prefer_sparse: bool = True
     jax_dense_max_mb: float = 128.0
     diffrax_solver: str = "tsit5"
+    jax_dtype: str = "float64"
+    steady_state_tail_points: int = 1
 
     @classmethod
     def from_config(
@@ -150,6 +152,8 @@ class SolverOptions:
             jax_prefer_sparse=True if jax_cfg is None else bool(jax_cfg.prefer_sparse),
             jax_dense_max_mb=128.0 if jax_cfg is None else float(jax_cfg.dense_max_mb),
             diffrax_solver="tsit5" if diffrax_cfg is None else str(diffrax_cfg.solver),
+            jax_dtype="float64" if jax_cfg is None else getattr(jax_cfg, "dtype", "float64"),
+            steady_state_tail_points=1 if diffrax_cfg is None else getattr(diffrax_cfg, "steady_state_tail_points", 1),
         )
 
 

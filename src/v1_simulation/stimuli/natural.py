@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -164,6 +164,7 @@ class L4NaturalImageProjector:
             l4_pref_dirs=l4_pref_dirs,
         )
         self.drive_cfg = drive_cfg
+        self._M = None
 
         coords = np.asarray(l4_layer.coords, dtype=float)
         self.x_i = coords[:, 0]
@@ -174,6 +175,74 @@ class L4NaturalImageProjector:
         self.image_x_max = float(np.max(self.x_i) + grid.x_axis[-1])
         self.image_y_min = float(np.min(self.y_i) + grid.y_axis[0])
         self.image_y_max = float(np.max(self.y_i) + grid.y_axis[-1])
+
+    def _get_projection_matrix(self, H: int, W: int) -> NDArray[np.float64]:
+        if self._M is not None and self._M.shape == (int(self.l4.N), H * W):
+            return self._M
+
+        n_l4 = int(self.l4.N)
+        M = np.zeros((n_l4, H * W), dtype=float)
+        grid = self.rf_bank.grid
+        filters = self.rf_bank.filters
+        chunk_size = self.drive_cfg.projection_chunk_size
+        periodic = self.drive_cfg.periodic
+
+        dx_dy = grid.dx * grid.dy
+
+        for start in range(0, n_l4, chunk_size):
+            stop = min(start + chunk_size, n_l4)
+            chunk_len = stop - start
+
+            x = self.x_i[start:stop, np.newaxis, np.newaxis] + grid.x[np.newaxis, :, :]
+            y = self.y_i[start:stop, np.newaxis, np.newaxis] + grid.y[np.newaxis, :, :]
+
+            cols = self._coord_to_pixel(x, self.image_x_min, self.image_x_max, W)
+            rows = self._coord_to_pixel(y, self.image_y_min, self.image_y_max, H)
+
+            r0 = np.floor(rows).astype(np.int32)
+            c0 = np.floor(cols).astype(np.int32)
+            dr = rows - r0
+            dc = cols - c0
+            r1 = r0 + 1
+            c1 = c0 + 1
+
+            if periodic:
+                r0 = r0 % H
+                r1 = r1 % H
+                c0 = c0 % W
+                c1 = c1 % W
+            else:
+                r0 = np.clip(r0, 0, H - 1)
+                r1 = np.clip(r1, 0, H - 1)
+                c0 = np.clip(c0, 0, W - 1)
+                c1 = np.clip(c1, 0, W - 1)
+
+            w00 = (1.0 - dr) * (1.0 - dc)
+            w01 = (1.0 - dr) * dc
+            w10 = dr * (1.0 - dc)
+            w11 = dr * dc
+
+            K = filters[start:stop] * dx_dy
+
+            coeff00 = K * w00
+            coeff01 = K * w01
+            coeff10 = K * w10
+            coeff11 = K * w11
+
+            idx00 = r0 * W + c0
+            idx01 = r0 * W + c1
+            idx10 = r1 * W + c0
+            idx11 = r1 * W + c1
+
+            for j in range(chunk_len):
+                row_idx = start + j
+                np.add.at(M[row_idx], idx00[j].ravel(), coeff00[j].ravel())
+                np.add.at(M[row_idx], idx01[j].ravel(), coeff01[j].ravel())
+                np.add.at(M[row_idx], idx10[j].ravel(), coeff10[j].ravel())
+                np.add.at(M[row_idx], idx11[j].ravel(), coeff11[j].ravel())
+
+        self._M = M
+        return self._M
 
     def project(self, frame: NDArray[np.float64]) -> NDArray[np.float64]:
         """Projects a preprocessed 2D visual frame to calculate L4 neuron input rates.
@@ -192,23 +261,14 @@ class L4NaturalImageProjector:
         if frame.ndim != 2:
             raise ValueError("frame must be a two-dimensional image.")
 
-        n_l4 = int(self.l4.N)
-        rates = np.empty(n_l4, dtype=float)
+        H, W = frame.shape
+        M = self._get_projection_matrix(H, W)
+        integral = M @ frame.ravel()
 
-        filters = self.rf_bank.filters
-        grid = self.rf_bank.grid
-        chunk_size = self.drive_cfg.projection_chunk_size
-
-        for start in range(0, n_l4, chunk_size):
-            stop = min(start + chunk_size, n_l4)
-            local_frame = self._sample_frame_at_rf_positions(frame, start, stop)
-            integral = np.sum(filters[start:stop] * local_frame, axis=(1, 2))
-            integral *= grid.dx * grid.dy
-
-            rates[start:stop] = (
-                np.maximum(0.0, self.drive_cfg.baseline_rate + integral)
-                * self.drive_cfg.visual_gain
-            )
+        rates = (
+            np.maximum(0.0, self.drive_cfg.baseline_rate + integral)
+            * self.drive_cfg.visual_gain
+        )
 
         return rates
 
@@ -263,9 +323,24 @@ class NaturalImageL4Drive:
         self.dataset = dataset
         self.preprocessor = preprocessor
         self.projector = projector
+        self._cached_rates = {}
+
+    def preload_cache(self, samples: Sequence[NaturalImageSample], cache_dir: str | Path = "data/.gabor_cache") -> None:
+        from v1_simulation.training.gabor_cache import GaborProjectionCache
+        cache_manager = GaborProjectionCache(cache_dir)
+        self._cached_rates.update(
+            cache_manager.load_or_build(
+                self.projector,
+                self.preprocessor,
+                self.dataset,
+                samples,
+            )
+        )
 
     def rates_for_sample(self, sample: NaturalImageSample) -> NDArray[np.float64]:
         """Computes the visual input rates for a single natural image sample."""
+        if sample in self._cached_rates:
+            return self._cached_rates[sample]
         image = self.dataset.read(sample.path)
         frame = self.preprocessor.transform(image, sample)
         return self.projector.project(frame)
@@ -278,6 +353,7 @@ class NaturalImageL4Drive:
         def aX_func(_t: float) -> NDArray[np.float64]:
             return rates
 
+        aX_func.is_time_dependent = False
         return aX_func
 
     def make_static_batch_func(
@@ -285,15 +361,9 @@ class NaturalImageL4Drive:
         samples: tuple[NaturalImageSample, ...] | list[NaturalImageSample],
     ) -> Callable[[float], NDArray[np.float64]]:
         """Returns a time-invariant visual drive function for a batch of natural image crops."""
-        image_cache = {}
         rates = []
-
         for sample in samples:
-            if sample.path not in image_cache:
-                image_cache[sample.path] = self.dataset.read(sample.path)
-
-            frame = self.preprocessor.transform(image_cache[sample.path], sample)
-            rates.append(self.projector.project(frame))
+            rates.append(self.rates_for_sample(sample))
 
         rate_matrix = np.column_stack(rates)
         rate_matrix.setflags(write=False)
@@ -301,4 +371,5 @@ class NaturalImageL4Drive:
         def aX_array_func(_t: float) -> NDArray[np.float64]:
             return rate_matrix
 
+        aX_array_func.is_time_dependent = False
         return aX_array_func

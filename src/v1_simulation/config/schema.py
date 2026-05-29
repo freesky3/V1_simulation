@@ -404,10 +404,12 @@ class TransferConfig:
 class JaxSolverConfig:
     prefer_sparse: bool = True
     dense_max_mb: float = 128.0
+    dtype: str = "float64"
 
 @dataclass
 class DiffraxSolverConfig:
     solver: str = "tsit5"
+    steady_state_tail_points: int = 1
 
 @dataclass
 class SolverConfig:

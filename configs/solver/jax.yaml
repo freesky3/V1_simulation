@@ -6,3 +6,4 @@ method: RK4
 jax:
   prefer_sparse: true
   dense_max_mb: 128.0
+  dtype: float32

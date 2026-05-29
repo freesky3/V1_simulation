@@ -144,6 +144,55 @@ class DiffraxSolverTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.exc).all())
         self.assertTrue(np.isfinite(result.inh).all())
 
+    def test_diffrax_float32_support(self) -> None:
+        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        if not is_diffrax_available():
+            self.skipTest("Diffrax not installed")
+
+        from v1_simulation.config.schema import JaxSolverConfig
+
+        network = _tiny_network()
+        time = np.linspace(0.0, 0.05, 11)
+
+        phi_table = TransferTable(
+            np.linspace(-100.0, 100.0, 1000),
+            np.maximum(np.linspace(-100.0, 100.0, 1000), 0.0)
+        )
+
+        res_f64 = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[1.0, 2.0]]),
+            time=time,
+            n_batch=2,
+            solver_config=SolverConfig(
+                backend="diffrax",
+                method="adaptive",
+                jax=JaxSolverConfig(dtype="float64")
+            ),
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=phi_table,
+            phi_inh=phi_table,
+        )
+
+        res_f32 = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[1.0, 2.0]]),
+            time=time,
+            n_batch=2,
+            solver_config=SolverConfig(
+                backend="diffrax",
+                method="adaptive",
+                jax=JaxSolverConfig(dtype="float32")
+            ),
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=phi_table,
+            phi_inh=phi_table,
+        )
+
+        np.testing.assert_allclose(res_f64.exc, res_f32.exc, rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(res_f64.inh, res_f32.inh, rtol=1e-3, atol=1e-3)
+
+
     def test_diffrax_determinism(self) -> None:
         from v1_simulation.solvers.jax_backend import is_diffrax_available
         if not is_diffrax_available():

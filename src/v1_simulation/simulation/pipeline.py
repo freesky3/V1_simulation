@@ -253,6 +253,8 @@ def run_bcm_training(
                 shuffle_samples=True,
             )
         )
+        if hasattr(natural_drive, "preload_cache"):
+            natural_drive.preload_cache(epoch_samples)
         image_count += _count_unique_paths(epoch_samples)
         batch_size = int(cfg.training.bcm.batch_size)
         n_batches = (len(epoch_samples) + batch_size - 1) // batch_size

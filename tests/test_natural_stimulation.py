@@ -161,3 +161,57 @@ def test_natural_image_l4_drive(tmp_path) -> None:
     # Output shape: (n_neurons, n_batch) -> (1, 2)
     assert batch_rates.shape == (1, 2)
     assert not batch_rates.flags.writeable
+
+
+def test_gabor_projection_cache(tmp_path) -> None:
+    from v1_simulation.training.gabor_cache import GaborProjectionCache
+
+    # Create dummy datasets, preprocessor, projector, samples
+    class MockDataset:
+        def __init__(self):
+            self.calls = 0
+        def read(self, path):
+            self.calls += 1
+            return np.ones((3, 3))
+
+    preprocessor = NaturalImagePreprocessor(
+        NaturalImagePreprocessConfig(resolution=3, normalization="maxscale")
+    )
+
+    l4_layer = SimpleNamespace(
+        coords=np.array([[0.0, 0.0]]),
+        tunings=["U"],
+        pref_dirs=[np.nan],
+        N=1,
+    )
+    rf_cfg = GaborRFConfig(
+        stimulus_size=2.0,
+        resolution=3,
+        gabor=GaborConfig(sigma=0.5, gamma=1.0, spatial_frequency=1.0, phase=0.0),
+    )
+    drive_cfg = NaturalImageDriveConfig(visual_gain=1.0, baseline_rate=0.0)
+    projector = L4NaturalImageProjector(l4_layer=l4_layer, rf_cfg=rf_cfg, drive_cfg=drive_cfg)
+
+    dataset = MockDataset()
+    samples = [
+        NaturalImageSample(path="dummy1.iml", crop=None),
+        NaturalImageSample(path="dummy2.iml", crop=None),
+    ]
+
+    cache = GaborProjectionCache(cache_dir=tmp_path)
+
+    # First call - cache miss, should build cache and read dataset
+    res_miss = cache.load_or_build(projector, preprocessor, dataset, samples)
+    assert len(res_miss) == 2
+    assert dataset.calls == 2
+
+    # Second call - cache hit, should load from file and not read dataset again
+    dataset_hit = MockDataset()
+    res_hit = cache.load_or_build(projector, preprocessor, dataset_hit, samples)
+    assert len(res_hit) == 2
+    assert dataset_hit.calls == 0
+
+    # Verify keys and values are equal
+    for s in samples:
+        assert np.array_equal(res_miss[s], res_hit[s])
+

@@ -137,14 +137,22 @@ class BCMTrainer:
 
 def _training_weight_stats(network: NetworkState) -> dict[str, float]:
     weights = network.weights
+    if sparse.issparse(weights):
+        weights_dense = weights.toarray()
+    else:
+        weights_dense = np.asarray(weights)
+
     idx_E = network.idx_E
     idx_I = network.idx_I
 
     stats: dict[str, float] = {}
-    stats.update(_nonzero_stats(weights[np.ix_(idx_E, idx_E)], "W_EE"))
-    stats.update(_row_sum_stats(weights[np.ix_(idx_E, idx_E)], "W_EE_row_sum"))
-    stats.update(_nonzero_stats(weights[np.ix_(idx_I, idx_E)], "W_IE"))
-    stats.update(_row_sum_stats(weights[np.ix_(idx_I, idx_E)], "W_IE_row_sum"))
+    w_ee = weights_dense[np.ix_(idx_E, idx_E)]
+    stats.update(_nonzero_stats(w_ee, "W_EE"))
+    stats.update(_row_sum_stats(w_ee, "W_EE_row_sum"))
+
+    w_ie = weights_dense[np.ix_(idx_I, idx_E)]
+    stats.update(_nonzero_stats(w_ie, "W_IE"))
+    stats.update(_row_sum_stats(w_ie, "W_IE_row_sum"))
     return stats
 
 

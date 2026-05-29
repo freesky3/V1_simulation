@@ -7,6 +7,7 @@ import numpy as np
 from scipy import sparse as scipy_sparse
 
 from v1_simulation.solvers.base import (
+    BatchODEResult,
     ExternalDrive,
     FloatArray,
     NetworkLayout,
@@ -30,6 +31,53 @@ _jax_rk4_solve_cache = {}
 _diffrax_solve_cache = {}
 
 
+def _slice_weight_blocks(
+    weights,
+    idx_exc: np.ndarray,
+    idx_inh: np.ndarray,
+    idx_ext: np.ndarray,
+    jnp,
+    *,
+    prefer_sparse: bool,
+    dense_max_mb: float,
+    dtype=None,
+):
+    """Pre-slice weight matrix into excitatory, inhibitory and external blocks.
+
+    Slicing is performed in SciPy (Python layer) before any JAX JIT boundary.
+    Each block is then converted to a JAX dense or sparse array.
+
+    Args:
+        weights: The full weight matrix (scipy sparse or dense numpy).
+        idx_exc: Column indices for excitatory source neurons.
+        idx_inh: Column indices for inhibitory source neurons.
+        idx_ext: Column indices for external (L4) source neurons.
+        jnp: The jax.numpy module.
+        prefer_sparse: Whether to use JAX BCOO sparse format for large blocks.
+        dense_max_mb: Maximum size (MB) allowed for a dense fallback.
+        dtype: Optional target JAX data type.
+
+    Returns:
+        Tuple (W_exc, W_inh, W_ext) as JAX arrays.
+    """
+    w = scipy_sparse.csc_matrix(weights) if scipy_sparse.issparse(weights) else weights
+
+    if scipy_sparse.issparse(w):
+        w_exc = scipy_sparse.csr_matrix(w[:, idx_exc])
+        w_inh = scipy_sparse.csr_matrix(w[:, idx_inh])
+        w_ext = scipy_sparse.csr_matrix(w[:, idx_ext])
+    else:
+        w_exc = w[:, idx_exc]
+        w_inh = w[:, idx_inh]
+        w_ext = w[:, idx_ext]
+
+    return (
+        _prepare_jax_matrix(w_exc, jnp, prefer_sparse=prefer_sparse, dense_max_mb=dense_max_mb, dtype=dtype),
+        _prepare_jax_matrix(w_inh, jnp, prefer_sparse=prefer_sparse, dense_max_mb=dense_max_mb, dtype=dtype),
+        _prepare_jax_matrix(w_ext, jnp, prefer_sparse=prefer_sparse, dense_max_mb=dense_max_mb, dtype=dtype),
+    )
+
+
 def solve_jax_rk4(
     *,
     rhs,
@@ -40,6 +88,9 @@ def solve_jax_rk4(
     options: SolverOptions,
 ) -> BatchODEResult:
     """Solves the Wilson-Cowan system using a JIT-compiled JAX RK4 solver.
+
+    Weight blocks W_exc, W_inh, W_ext are pre-sliced in Python (outside JIT)
+    to avoid dynamic indexing inside the compiled function.
 
     Args:
         rhs: The callable right-hand side evaluator of the network dynamics.
@@ -62,12 +113,26 @@ def solve_jax_rk4(
         )
 
     jax, jnp = _require_jax("jax-rk4")
-    ax_left, ax_mid, ax_right = _precompute_rk4_inputs(
-        external_drive,
-        time,
-        n_ext=layout.n_ext,
-        n_batch=n_batch,
-    )
+    is_static = getattr(external_drive, "is_time_dependent", None) is False
+    if is_static:
+        ax_0 = validate_external_drive_value(external_drive(0.0), n_ext=layout.n_ext, n_batch=n_batch)
+        dummy_shape = (time.size - 1, 1, 1)
+        ax_left = np.zeros(dummy_shape, dtype=np.float64)
+        ax_mid = np.zeros(dummy_shape, dtype=np.float64)
+        ax_right = np.zeros(dummy_shape, dtype=np.float64)
+    else:
+        ax_left, ax_mid, ax_right = _precompute_rk4_inputs(
+            external_drive,
+            time,
+            n_ext=layout.n_ext,
+            n_batch=n_batch,
+        )
+        if getattr(external_drive, "is_time_dependent", None) is None:
+            is_static = bool(
+                np.all(ax_left == ax_left[0]) and np.all(ax_mid == ax_left[0]) and np.all(ax_right == ax_left[0])
+            )
+        ax_0 = ax_left[0]
+
     bg_left_e, bg_mid_e, bg_right_e, bg_left_i, bg_mid_i, bg_right_i = _precompute_rk4_background(
         rhs.background_trace,
         layout=layout,
@@ -76,45 +141,59 @@ def solve_jax_rk4(
     )
     phi_exc_x, phi_exc_y = _transfer_table_arrays(rhs.phi_exc, "phi_exc")
     phi_inh_x, phi_inh_y = _transfer_table_arrays(rhs.phi_inh, "phi_inh")
-    weights = _prepare_jax_matrix(
+
+    dtype = jnp.float32 if options.jax_dtype == "float32" else jnp.float64
+
+    # Pre-slice weight blocks in Python (scipy layer) before any JIT boundary.
+    W_exc, W_inh, W_ext = _slice_weight_blocks(
         rhs.weights,
+        layout.idx_exc,
+        layout.idx_inh,
+        layout.idx_ext,
         jnp,
         prefer_sparse=options.jax_prefer_sparse,
         dense_max_mb=options.jax_dense_max_mb,
+        dtype=dtype,
     )
 
-    is_static = bool(
-        np.all(ax_left == ax_left[0]) and np.all(ax_mid == ax_left[0]) and np.all(ax_right == ax_left[0])
-    )
-    y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=jnp.asarray(time).dtype)
+    y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=dtype)
     cache_key = (options.store_trajectory, is_static)
     if cache_key not in _jax_rk4_solve_cache:
         _jax_rk4_solve_cache[cache_key] = _make_jax_rk4(
             jax, jnp, store_trajectory=options.store_trajectory, is_static=is_static
         )
     run = _jax_rk4_solve_cache[cache_key]
+
+    # Precompute static external contribution here (Python layer) when is_static=True.
+    if is_static:
+        mu_ext = W_ext @ jnp.asarray(ax_0, dtype=dtype)
+    else:
+        mu_ext = jnp.zeros((layout.n_rates, int(n_batch)), dtype=dtype)
+
     out = run(
         y0,
-        weights,
+        W_exc,
+        W_inh,
+        W_ext,
+        mu_ext,
         jnp.asarray(layout.idx_exc, dtype=jnp.int32),
         jnp.asarray(layout.idx_inh, dtype=jnp.int32),
-        jnp.asarray(layout.idx_ext, dtype=jnp.int32),
-        jnp.asarray(time),
-        jnp.asarray(ax_left),
-        jnp.asarray(ax_mid),
-        jnp.asarray(ax_right),
-        jnp.asarray(bg_left_e),
-        jnp.asarray(bg_mid_e),
-        jnp.asarray(bg_right_e),
-        jnp.asarray(bg_left_i),
-        jnp.asarray(bg_mid_i),
-        jnp.asarray(bg_right_i),
-        jnp.asarray(phi_exc_x),
-        jnp.asarray(phi_exc_y),
-        jnp.asarray(phi_inh_x),
-        jnp.asarray(phi_inh_y),
-        jnp.asarray(float(rhs.tau_exc)),
-        jnp.asarray(float(rhs.tau_inh)),
+        jnp.asarray(time, dtype=dtype),
+        jnp.asarray(ax_left, dtype=dtype),
+        jnp.asarray(ax_mid, dtype=dtype),
+        jnp.asarray(ax_right, dtype=dtype),
+        jnp.asarray(bg_left_e, dtype=dtype),
+        jnp.asarray(bg_mid_e, dtype=dtype),
+        jnp.asarray(bg_right_e, dtype=dtype),
+        jnp.asarray(bg_left_i, dtype=dtype),
+        jnp.asarray(bg_mid_i, dtype=dtype),
+        jnp.asarray(bg_right_i, dtype=dtype),
+        jnp.asarray(phi_exc_x, dtype=dtype),
+        jnp.asarray(phi_exc_y, dtype=dtype),
+        jnp.asarray(phi_inh_x, dtype=dtype),
+        jnp.asarray(phi_inh_y, dtype=dtype),
+        jnp.asarray(float(rhs.tau_exc), dtype=dtype),
+        jnp.asarray(float(rhs.tau_inh), dtype=dtype),
     )
 
     if options.store_trajectory:
@@ -147,6 +226,9 @@ def solve_diffrax(
 ) -> BatchODEResult:
     """Solves the system using JAX-based Diffrax solver.
 
+    Weight blocks W_exc, W_inh, W_ext are pre-sliced in Python (outside JIT)
+    to avoid dynamic indexing inside the compiled function.
+
     Args:
         rhs: The callable right-hand side evaluator of the network dynamics.
         external_drive: Continuous-time L4 stimulus drive.
@@ -170,12 +252,21 @@ def solve_diffrax(
     jax, jnp = _require_jax("diffrax")
     diffrax = _require_diffrax()
 
-    ax_t = _precompute_diffrax_inputs(
-        external_drive,
-        time,
-        n_ext=layout.n_ext,
-        n_batch=n_batch,
-    )
+    is_static = getattr(external_drive, "is_time_dependent", None) is False
+    if is_static:
+        ax_0 = validate_external_drive_value(external_drive(0.0), n_ext=layout.n_ext, n_batch=n_batch)
+        ax_t = np.zeros((2, 1, 1), dtype=np.float64)
+    else:
+        ax_t = _precompute_diffrax_inputs(
+            external_drive,
+            time,
+            n_ext=layout.n_ext,
+            n_batch=n_batch,
+        )
+        if getattr(external_drive, "is_time_dependent", None) is None:
+            is_static = bool(np.all(ax_t == ax_t[0]))
+        ax_0 = ax_t[0]
+
     bg_e, bg_i = _precompute_diffrax_background(
         rhs.background_trace,
         layout=layout,
@@ -185,16 +276,24 @@ def solve_diffrax(
 
     phi_exc_x, phi_exc_y = _transfer_table_arrays(rhs.phi_exc, "phi_exc")
     phi_inh_x, phi_inh_y = _transfer_table_arrays(rhs.phi_inh, "phi_inh")
-    weights = _prepare_jax_matrix(
+
+    dtype = jnp.float32 if options.jax_dtype == "float32" else jnp.float64
+
+    # Pre-slice weight blocks in Python (scipy layer) before any JIT boundary.
+    W_exc, W_inh, W_ext = _slice_weight_blocks(
         rhs.weights,
+        layout.idx_exc,
+        layout.idx_inh,
+        layout.idx_ext,
         jnp,
         prefer_sparse=options.jax_prefer_sparse,
         dense_max_mb=options.jax_dense_max_mb,
+        dtype=dtype,
     )
 
-    is_static = bool(np.all(ax_t == ax_t[0]))
-    y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=jnp.asarray(time).dtype)
-    cache_key = (options.diffrax_solver, options.store_trajectory, is_static)
+    y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=dtype)
+    tail_points = options.steady_state_tail_points
+    cache_key = (options.diffrax_solver, options.store_trajectory, is_static, tail_points)
     if cache_key not in _diffrax_solve_cache:
         _diffrax_solve_cache[cache_key] = _make_diffrax_diffeqsolve(
             jax,
@@ -203,25 +302,34 @@ def solve_diffrax(
             solver_name=options.diffrax_solver,
             store_trajectory=options.store_trajectory,
             is_static=is_static,
+            tail_points=tail_points,
         )
     run = _diffrax_solve_cache[cache_key]
 
+    # Precompute static external contribution here (Python layer) when is_static=True.
+    if is_static:
+        mu_ext = W_ext @ jnp.asarray(ax_0, dtype=dtype)
+    else:
+        mu_ext = jnp.zeros((layout.n_rates, int(n_batch)), dtype=dtype)
+
     out = run(
         y0,
-        weights,
+        W_exc,
+        W_inh,
+        W_ext,
+        mu_ext,
         jnp.asarray(layout.idx_exc, dtype=jnp.int32),
         jnp.asarray(layout.idx_inh, dtype=jnp.int32),
-        jnp.asarray(layout.idx_ext, dtype=jnp.int32),
-        jnp.asarray(time),
-        jnp.asarray(ax_t),
-        jnp.asarray(bg_e),
-        jnp.asarray(bg_i),
-        jnp.asarray(phi_exc_x),
-        jnp.asarray(phi_exc_y),
-        jnp.asarray(phi_inh_x),
-        jnp.asarray(phi_inh_y),
-        jnp.asarray(float(rhs.tau_exc)),
-        jnp.asarray(float(rhs.tau_inh)),
+        jnp.asarray(time, dtype=dtype),
+        jnp.asarray(ax_t, dtype=dtype),
+        jnp.asarray(bg_e, dtype=dtype),
+        jnp.asarray(bg_i, dtype=dtype),
+        jnp.asarray(phi_exc_x, dtype=dtype),
+        jnp.asarray(phi_exc_y, dtype=dtype),
+        jnp.asarray(phi_inh_x, dtype=dtype),
+        jnp.asarray(phi_inh_y, dtype=dtype),
+        jnp.asarray(float(rhs.tau_exc), dtype=dtype),
+        jnp.asarray(float(rhs.tau_inh), dtype=dtype),
     )
 
     if options.store_trajectory:
@@ -251,8 +359,13 @@ def _make_diffrax_diffeqsolve(
     solver_name: str,
     store_trajectory: bool,
     is_static: bool,
+    tail_points: int,
 ):
     """Creates a JIT-compiled JAX function to solve the Wilson-Cowan ODEs using Diffrax.
+
+    Receives pre-sliced weight sub-matrices W_exc, W_inh, W_ext and (when is_static=True)
+    the precomputed static external drive contribution mu_ext. No weight indexing occurs
+    inside this JIT-compiled function.
 
     Args:
         jax: The jax module.
@@ -308,10 +421,12 @@ def _make_diffrax_diffeqsolve(
 
     def run(
         y0,
-        weights,
+        W_exc,
+        W_inh,
+        W_ext,
+        mu_ext,
         idx_exc,
         idx_inh,
-        idx_ext,
         time,
         ax_t,
         bg_e,
@@ -323,15 +438,10 @@ def _make_diffrax_diffeqsolve(
         tau_exc,
         tau_inh,
     ):
-        W_exc = weights[:, idx_exc]
-        W_inh = weights[:, idx_inh]
-        W_ext = weights[:, idx_ext]
-
         bg_e_interp = diffrax.LinearInterpolation(time, bg_e)
         bg_i_interp = diffrax.LinearInterpolation(time, bg_i)
 
         if is_static:
-            mu_ext = W_ext @ ax_t[0]
             args = (
                 W_exc,
                 W_inh,
@@ -373,7 +483,12 @@ def _make_diffrax_diffeqsolve(
             raise ValueError(f"Unsupported diffrax solver: {solver_name}")
         stepsize_controller = diffrax.ConstantStepSize()
         dt0 = time[1] - time[0]
-        saveat = diffrax.SaveAt(ts=time)
+        if store_trajectory:
+            saveat = diffrax.SaveAt(ts=time)
+        elif tail_points > 1:
+            saveat = diffrax.SaveAt(ts=time[-tail_points:])
+        else:
+            saveat = diffrax.SaveAt(t1=True)
 
         sol = diffrax.diffeqsolve(
             term,
@@ -390,9 +505,11 @@ def _make_diffrax_diffeqsolve(
         y_all = sol.ys
         if store_trajectory:
             return y_all
-        
-        tail = y_all[int(time.shape[0] * 2 / 3) :, :, :]
-        return jnp.mean(tail, axis=0), jnp.std(tail, axis=0)
+
+        if tail_points > 1:
+            return jnp.mean(y_all, axis=0), jnp.std(y_all, axis=0)
+        else:
+            return y_all, jnp.zeros_like(y_all)
 
     return jax.jit(run)
 
@@ -449,18 +566,33 @@ def _precompute_diffrax_background(
 
 
 def _make_jax_rk4(jax, jnp, *, store_trajectory: bool, is_static: bool):
+    """Creates a JIT-compiled JAX RK4 ODE solver for the Wilson-Cowan system.
+
+    Receives pre-sliced weight sub-matrices W_exc, W_inh, W_ext and (when is_static=True)
+    the precomputed static external drive contribution mu_ext. No weight indexing occurs
+    inside this JIT-compiled function.
+
+    Args:
+        jax: The jax module.
+        jnp: The jax.numpy module.
+        store_trajectory: Whether to return the full rate trajectories.
+        is_static: Whether the external L4 stimulus drive is constant over time.
+
+    Returns:
+        A JIT-compiled callable `run`.
+    """
     def interp_phi(x, xp, fp):
         return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
 
     if is_static:
         def wc_rhs(
             y,
-            ax,
+            _ax,
             bg_e,
             bg_i,
             W_exc,
             W_inh,
-            W_ext,
+            _W_ext,
             idx_exc,
             idx_inh,
             phi_exc_x,
@@ -515,10 +647,12 @@ def _make_jax_rk4(jax, jnp, *, store_trajectory: bool, is_static: bool):
 
     def run(
         y0,
-        weights,
+        W_exc,
+        W_inh,
+        W_ext,
+        mu_ext,
         idx_exc,
         idx_inh,
-        idx_ext,
         time,
         ax_left,
         ax_mid,
@@ -536,15 +670,6 @@ def _make_jax_rk4(jax, jnp, *, store_trajectory: bool, is_static: bool):
         tau_exc,
         tau_inh,
     ):
-        W_exc = weights[:, idx_exc]
-        W_inh = weights[:, idx_inh]
-        W_ext = weights[:, idx_ext]
-
-        if is_static:
-            mu_ext = W_ext @ ax_left[0]
-        else:
-            mu_ext = None
-
         params = (
             W_exc,
             W_inh,
@@ -658,18 +783,21 @@ def _transfer_table_arrays(phi, name: str) -> tuple[FloatArray, FloatArray]:
     return np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
 
 
-def _prepare_jax_matrix(matrix, jnp, *, prefer_sparse: bool, dense_max_mb: float):
+def _prepare_jax_matrix(matrix, jnp, *, prefer_sparse: bool, dense_max_mb: float, dtype=None):
+    if dtype is None:
+        dtype = jnp.float64
     if prefer_sparse and scipy_sparse.issparse(matrix):
         from jax.experimental import sparse as jax_sparse
 
         coo = matrix.tocoo()
         indices = np.column_stack([coo.row, coo.col]).astype(np.int32, copy=False)
-        return jax_sparse.BCOO((jnp.asarray(coo.data), jnp.asarray(indices)), shape=coo.shape)
+        return jax_sparse.BCOO((jnp.asarray(coo.data, dtype=dtype), jnp.asarray(indices)), shape=coo.shape)
 
-    dense_mb = np.prod(matrix.shape) * np.dtype(np.float64).itemsize / 1024.0**2
+    np_dtype = np.float32 if dtype == jnp.float32 else np.float64
+    dense_mb = np.prod(matrix.shape) * np_dtype().itemsize / 1024.0**2
     if dense_mb > float(dense_max_mb):
         raise RuntimeError(f"Dense JAX weights fallback would require {dense_mb:.1f} MB.")
-    return jnp.asarray(matrix.toarray() if scipy_sparse.issparse(matrix) else matrix)
+    return jnp.asarray(matrix.toarray() if scipy_sparse.issparse(matrix) else matrix, dtype=dtype)
 
 
 def _require_jax(backend_name: str = "jax-rk4"):

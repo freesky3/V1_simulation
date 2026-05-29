@@ -5,8 +5,10 @@ method: adaptive
 
 diffrax:
   solver: tsit5
+  steady_state_tail_points: 1
 
 jax:
   prefer_sparse: false
   dense_max_mb: 512.0
+  dtype: float32
 
