@@ -95,6 +95,7 @@ def run_drifting_grating_pipeline(
         time=time_grid,
         network=run_network,
         metadata=build_simulation_metadata(cfg, run_network, theta_angles, time_grid),
+        center_side_fraction=float(cfg.analysis.center_side_fraction),
     )
 
 

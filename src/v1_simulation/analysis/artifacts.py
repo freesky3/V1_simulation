@@ -35,6 +35,23 @@ def load_analysis_inputs_from_run(
     exc_idx = network.idx_E
     coords = l23.coords[exc_idx]
     distance = l23.distance_matrix()[np.ix_(exc_idx, exc_idx)]
+
+    run_config_path = root / "run_config.json"
+    center_side_fraction = 1.0
+    if run_config_path.exists():
+        try:
+            with run_config_path.open("r", encoding="utf-8") as f:
+                meta = json.load(f)
+                center_side_fraction = float(meta.get("config", {}).get("analysis", {}).get("center_side_fraction", 1.0))
+        except Exception:
+            pass
+
+    if center_side_fraction < 1.0:
+        half_side = (l23.region_size * center_side_fraction) / 2.0
+        in_center_E = (np.abs(coords[:, 0]) <= half_side) & (np.abs(coords[:, 1]) <= half_side)
+        coords = coords[in_center_E]
+        distance = distance[np.ix_(in_center_E, in_center_E)]
+
     return AnalysisInputs(
         responses=np.asarray(responses, dtype=float),
         coords=coords,

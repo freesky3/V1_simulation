@@ -3,7 +3,7 @@
 seed: ${seed}
 num_surrogates: 10000
 center_side_fraction: 0.5
-osi_threshold: 0.4
+osi_threshold: 0.6
 random_sample_fraction: 0.5
 louvain:
   thr_prop: 0.2

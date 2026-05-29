@@ -173,8 +173,8 @@ def write_simulation_artifacts(result, output_dir: str | Path, *, save_network: 
 
     np.save(output_dir / "theta_angles.npy", result.theta_angles)
     np.save(output_dir / "time.npy", result.time)
-    np.save(output_dir / "exc_mean.npy", result.ode.exc)
-    np.save(output_dir / "inh_mean.npy", result.ode.inh)
+    np.save(output_dir / "exc_mean.npy", result.exc_mean)
+    np.save(output_dir / "inh_mean.npy", result.inh_mean)
 
     if result.ode.exc_trajectory is not None:
         np.save(output_dir / "responses_exc.npy", result.exc_responses)

@@ -15,13 +15,13 @@ layers:
     random_inhibitory: false
 
 connectivity:
-  p_ee: 0.12
+  p_ee: 0.10
   j: 3.0
-  g: 5.5
+  g: 6.0
   equalize_indegree: true
   scales:
-    ee: 1.0
-    ei: 1.08
+    ee: 0.9
+    ei: 1.12
     ex: 1.0
     ie: 1.0
     ii: 1.0
