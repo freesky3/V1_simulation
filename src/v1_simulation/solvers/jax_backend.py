@@ -542,17 +542,23 @@ def _make_diffrax_diffeqsolve(
             saveat = diffrax.SaveAt(t1=True)
 
         if early_stop_enabled:
-            def cond_fn(state, **kwargs):
-                t = state.t
-                y = state.y
-                args_val = getattr(state, "args", args)
-                dy = vector_field(t, y, args_val)
+            def cond_fn(state_or_t, y=None, args_in=None, **kwargs):
+                if y is None:
+                    t = state_or_t.t
+                    y_val = state_or_t.y
+                    args_val = getattr(state_or_t, "args", args)
+                else:
+                    t = state_or_t
+                    y_val = y
+                    args_val = args_in
+                
+                dy = vector_field(t, y_val, args_val)
                 if early_stop_norm == "max":
                     f_norm = jnp.max(jnp.abs(dy))
-                    y_norm = jnp.max(jnp.abs(y))
+                    y_norm = jnp.max(jnp.abs(y_val))
                 else:
                     f_norm = jnp.sqrt(jnp.mean(jnp.square(dy)))
-                    y_norm = jnp.sqrt(jnp.mean(jnp.square(y)))
+                    y_norm = jnp.sqrt(jnp.mean(jnp.square(y_val)))
                 
                 is_steady = f_norm < early_stop_f_atol + early_stop_f_rtol * y_norm
                 return jnp.logical_and(t >= early_stop_min_time, is_steady)

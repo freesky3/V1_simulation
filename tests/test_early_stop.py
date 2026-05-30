@@ -46,12 +46,19 @@ def test_early_stop_linear_analytic():
     f_atol = 1e-4
     f_rtol = 0.0
     
-    def cond_fn(state, **kwargs):
-        dy = mock_vector_field(state.t, state.y, {"lambda": lam})
+    def cond_fn(state_or_t, y=None, args_in=None, **kwargs):
+        if y is None:
+            t = state_or_t.t
+            y_val = state_or_t.y
+        else:
+            t = state_or_t
+            y_val = y
+            
+        dy = mock_vector_field(t, y_val, {"lambda": lam})
         f_norm = jnp.max(jnp.abs(dy))
-        y_norm = jnp.max(jnp.abs(state.y))
+        y_norm = jnp.max(jnp.abs(y_val))
         is_steady = f_norm < f_atol + f_rtol * y_norm
-        return jnp.logical_and(state.t >= 0.1, is_steady)
+        return jnp.logical_and(t >= 0.1, is_steady)
 
     if hasattr(diffrax, "Event"):
         event = diffrax.Event(cond_fn)
@@ -83,12 +90,19 @@ def test_early_stop_fixed_point():
     f_atol = 1e-4
     f_rtol = 1e-4
     
-    def cond_fn(state, **kwargs):
-        dy = mock_fixed_point_field(state.t, state.y, {"y_star": y_star})
+    def cond_fn(state_or_t, y=None, args_in=None, **kwargs):
+        if y is None:
+            t = state_or_t.t
+            y_val = state_or_t.y
+        else:
+            t = state_or_t
+            y_val = y
+            
+        dy = mock_fixed_point_field(t, y_val, {"y_star": y_star})
         f_norm = jnp.max(jnp.abs(dy))
-        y_norm = jnp.max(jnp.abs(state.y))
+        y_norm = jnp.max(jnp.abs(y_val))
         is_steady = f_norm < f_atol + f_rtol * y_norm
-        return jnp.logical_and(state.t >= 0.1, is_steady)
+        return jnp.logical_and(t >= 0.1, is_steady)
 
     if hasattr(diffrax, "Event"):
         event = diffrax.Event(cond_fn)
@@ -121,12 +135,19 @@ def test_early_stop_damped_oscillator():
     f_atol = 1e-4
     f_rtol = 1e-4
     
-    def cond_fn(state, **kwargs):
-        dy = mock_damped_oscillator(state.t, state.y, {"c": c, "k": k})
+    def cond_fn(state_or_t, y=None, args_in=None, **kwargs):
+        if y is None:
+            t = state_or_t.t
+            y_val = state_or_t.y
+        else:
+            t = state_or_t
+            y_val = y
+            
+        dy = mock_damped_oscillator(t, y_val, {"c": c, "k": k})
         f_norm = jnp.max(jnp.abs(dy))
-        y_norm = jnp.max(jnp.abs(state.y))
+        y_norm = jnp.max(jnp.abs(y_val))
         is_steady = f_norm < f_atol + f_rtol * y_norm
-        return jnp.logical_and(state.t >= 0.1, is_steady)
+        return jnp.logical_and(t >= 0.1, is_steady)
 
     if hasattr(diffrax, "Event"):
         event = diffrax.Event(cond_fn)
