@@ -424,12 +424,20 @@ class EarlyStopConfig:
     only_static_input: bool = True
 
 @dataclass
+class SolverDiagnosticsConfig:
+    enabled: bool = True
+    probe_dt: float = 1.0
+    eval_dy_at: str = "mean"  # "mean" or "final"
+    variables: str = "exc"    # "exc" or "all"
+
+@dataclass
 class SolverConfig:
     backend: str = "scipy"
     method: str = "RK4"
     jax: Optional[JaxSolverConfig] = None
     diffrax: Optional[DiffraxSolverConfig] = None
     early_stop: EarlyStopConfig = field(default_factory=EarlyStopConfig)
+    diagnostics: SolverDiagnosticsConfig = field(default_factory=SolverDiagnosticsConfig)
     transfer: TransferConfig = field(default_factory=TransferConfig)
 
 # ==========================================

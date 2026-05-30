@@ -11,3 +11,9 @@ early_stop:
   norm: max
   rk4_window: 5
   only_static_input: true
+
+diagnostics:
+  enabled: true
+  probe_dt: 1.0
+  eval_dy_at: mean
+  variables: exc

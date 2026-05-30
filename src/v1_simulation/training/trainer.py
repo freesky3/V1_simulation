@@ -50,6 +50,10 @@ class BatchTrainingLog:
     summary_window_size: int
     time_steps: int
     t_final: float
+    y_diff_max: float
+    y_diff_rms: float
+    dy_max: float
+    dy_rms: float
     skipped_bad_batch: bool = False
     weight_stats: dict[str, float] = field(default_factory=dict)
     theta_stats: dict[str, float] = field(default_factory=dict)
@@ -203,6 +207,10 @@ class BCMTrainer:
             summary_window_size=summary_w_size,
             time_steps=int(dynamics.time.size),
             t_final=float(dynamics.time[-1]),
+            y_diff_max=float(getattr(dynamics, "y_diff_max", float("nan"))),
+            y_diff_rms=float(getattr(dynamics, "y_diff_rms", float("nan"))),
+            dy_max=float(getattr(dynamics, "dy_max", float("nan"))),
+            dy_rms=float(getattr(dynamics, "dy_rms", float("nan"))),
             skipped_bad_batch=skipped,
             weight_stats=_training_weight_stats(self.state.network),
             theta_stats=_theta_stats(

@@ -329,6 +329,11 @@ def solve_diffrax(
         options.early_stop_f_atol,
         options.early_stop_f_rtol,
         options.early_stop_norm,
+        options.steady_state_tail_points,
+        options.diagnostics_enabled,
+        options.diagnostics_probe_dt,
+        options.diagnostics_eval_dy_at,
+        options.diagnostics_variables,
     )
     if cache_key not in _diffrax_solve_cache:
         _diffrax_solve_cache[cache_key] = _make_diffrax_diffeqsolve(
@@ -344,6 +349,10 @@ def solve_diffrax(
             early_stop_f_atol=options.early_stop_f_atol,
             early_stop_f_rtol=options.early_stop_f_rtol,
             early_stop_norm=options.early_stop_norm,
+            diagnostics_enabled=options.diagnostics_enabled,
+            diagnostics_probe_dt=options.diagnostics_probe_dt,
+            diagnostics_eval_dy_at=options.diagnostics_eval_dy_at,
+            diagnostics_variables=options.diagnostics_variables,
         )
     run = _diffrax_solve_cache[cache_key]
 
@@ -375,7 +384,7 @@ def solve_diffrax(
 
 
     if options.store_trajectory:
-        y_all, ss_reached, ss_index = out
+        y_all, ss_reached, ss_index, y_diff_max, y_diff_rms, dy_max, dy_rms = out
         jax.block_until_ready(y_all)
         return pack_trajectory_result(
             np.asarray(y_all, dtype=np.float64),
@@ -385,9 +394,13 @@ def solve_diffrax(
             steady_state_reached=bool(ss_reached),
             steady_state_index=int(ss_index) if ss_reached else None,
             steady_state_start_index=int(ss_index) if ss_reached else None,
+            y_diff_max=float(y_diff_max),
+            y_diff_rms=float(y_diff_rms),
+            dy_max=float(dy_max),
+            dy_rms=float(dy_rms),
         )
 
-    mean, std, ss_reached, ss_index = out
+    mean, std, ss_reached, ss_index, y_diff_max, y_diff_rms, dy_max, dy_rms = out
     jax.block_until_ready(mean)
     return pack_summary_result(
         mean_rates=np.asarray(mean, dtype=np.float64),
@@ -397,6 +410,10 @@ def solve_diffrax(
         steady_state_reached=bool(ss_reached),
         steady_state_index=int(ss_index) if ss_reached else None,
         steady_state_start_index=int(ss_index) if ss_reached else None,
+        y_diff_max=float(y_diff_max),
+        y_diff_rms=float(y_diff_rms),
+        dy_max=float(dy_max),
+        dy_rms=float(dy_rms),
     )
 
 
@@ -414,6 +431,10 @@ def _make_diffrax_diffeqsolve(
     early_stop_f_atol: float = 1e-4,
     early_stop_f_rtol: float = 1e-4,
     early_stop_norm: str = "max",
+    diagnostics_enabled: bool = True,
+    diagnostics_probe_dt: float = 1.0,
+    diagnostics_eval_dy_at: str = "mean",
+    diagnostics_variables: str = "exc",
 ):
     """Creates a JIT-compiled JAX function to solve the Wilson-Cowan ODEs using Diffrax.
 
@@ -538,11 +559,30 @@ def _make_diffrax_diffeqsolve(
         else:
             raise ValueError(f"Unsupported diffrax solver: {solver_name}")
         stepsize_controller = diffrax.ConstantStepSize()
-        dt0 = time[1] - time[0]
+        import numpy as np
+        dt0 = float(time[1] - time[0])
+        
+        ts_save = None
         if store_trajectory:
-            saveat = diffrax.SaveAt(ts=time)
-        elif tail_points > 1:
-            saveat = diffrax.SaveAt(ts=time[-tail_points:])
+            ts_save = time
+        else:
+            if diagnostics_enabled:
+                t_probe = max(float(time[0]), float(time[-1]) - diagnostics_probe_dt)
+                idx = np.searchsorted(time, t_probe)
+                idx = min(idx, len(time) - 1)
+                t_probe_actual = float(time[idx])
+                
+                if tail_points > 1:
+                    ts_list = [t_probe_actual] + time[-tail_points:].tolist()
+                    ts_save = np.unique(ts_list)
+                else:
+                    ts_save = np.array([t_probe_actual, float(time[-1])])
+            else:
+                if tail_points > 1:
+                    ts_save = time[-tail_points:]
+        
+        if ts_save is not None:
+            saveat = diffrax.SaveAt(ts=jnp.array(ts_save))
         else:
             saveat = diffrax.SaveAt(t1=True)
 
@@ -600,15 +640,45 @@ def _make_diffrax_diffeqsolve(
             ss_index = -1
 
         if store_trajectory:
-            return y_all, ss_reached, ss_index
+            return y_all, ss_reached, ss_index, jnp.nan, jnp.nan, jnp.nan, jnp.nan
 
-        if tail_points > 1:
-            return jnp.mean(y_all, axis=0), jnp.std(y_all, axis=0), ss_reached, ss_index
+        # Extract y_final and y_probe
+        if ts_save is not None:
+            y_tail = y_all[-tail_points:] if tail_points > 1 else y_all[[-1]]
+            y_mean = jnp.mean(y_tail, axis=0)
+            y_std = jnp.std(y_tail, axis=0)
+            y_probe = y_all[0]
+            y_final = y_tail[-1]
         else:
-            # SaveAt(t1=True) returns ys with shape (1, n_rates, n_batch).
-            # Squeeze the leading singleton so downstream gets (n_rates, n_batch).
             y_final = y_all[0]
-            return y_final, jnp.zeros_like(y_final), ss_reached, ss_index
+            y_mean = y_final
+            y_std = jnp.zeros_like(y_final)
+            y_probe = y_final
+
+        y_diff_max = jnp.nan
+        y_diff_rms = jnp.nan
+        dy_max = jnp.nan
+        dy_rms = jnp.nan
+
+        if diagnostics_enabled:
+            # 1. Compute y_diff using t_end and t_end - probe_dt
+            y_diff = y_final - y_probe
+            if diagnostics_variables == "exc":
+                y_diff = y_diff[idx_exc]
+            
+            y_diff_max = jnp.max(jnp.abs(y_diff))
+            y_diff_rms = jnp.sqrt(jnp.mean(jnp.square(y_diff)))
+
+            # 2. Compute dy residual at y_mean
+            y_eval = y_mean if diagnostics_eval_dy_at == "mean" else y_final
+            dy = vector_field(time[-1], y_eval, args)
+            if diagnostics_variables == "exc":
+                dy = dy[idx_exc]
+            
+            dy_max = jnp.max(jnp.abs(dy))
+            dy_rms = jnp.sqrt(jnp.mean(jnp.square(dy)))
+
+        return y_mean, y_std, ss_reached, ss_index, y_diff_max, y_diff_rms, dy_max, dy_rms
 
     return jax.jit(run)
 

@@ -110,6 +110,12 @@ def solve_fixed_rk4(
     steady_reached = False
     steady_index = None
     steady_start = None
+
+    y_probe = None
+    t_probe = None
+    if options.diagnostics_enabled:
+        t_probe = max(float(time[0]), float(time[-1]) - options.diagnostics_probe_dt)
+
     summary_start = int(time.size * 2 / 3)
     if not options.store_trajectory and summary_start == 0:
         summary.add(y)
@@ -144,6 +150,8 @@ def solve_fixed_rk4(
         if trajectory is not None:
             trajectory[step] = y.reshape(layout.n_rates, n_batch)
         else:
+            if t_probe is not None and y_probe is None and t0 >= t_probe:
+                y_probe = y.copy()
             if checker is not None:
                 tail.append(y.copy())
             if step >= summary_start:
@@ -172,6 +180,38 @@ def solve_fixed_rk4(
             steady_state_start_index=steady_start,
         )
 
+    y_diff_max = float("nan")
+    y_diff_rms = float("nan")
+    dy_max = float("nan")
+    dy_rms = float("nan")
+
+    if options.diagnostics_enabled:
+        y_final = y if summary.count == 0 else summary.sum_y / summary.count
+        if options.diagnostics_eval_dy_at == "final":
+            y_eval = y
+        else:
+            y_eval = y_final
+
+        dy = rhs(float(out_time[-1]), y_eval.ravel(), external_drive, background=None).reshape(layout.n_rates, n_batch)
+        if options.diagnostics_variables == "exc":
+            dy = dy[layout.idx_exc, :]
+            
+        dy_max = float(np.max(np.abs(dy)))
+        dy_rms = float(np.sqrt(np.mean(dy**2)))
+
+        y_p = y_probe if y_probe is not None else y0
+        if trajectory is not None:
+            idx = max(0, np.searchsorted(out_time, out_time[-1] - options.diagnostics_probe_dt))
+            y_p = trajectory[idx].ravel()
+
+        y_diff = y - y_p
+        y_diff = y_diff.reshape(layout.n_rates, n_batch)
+        if options.diagnostics_variables == "exc":
+            y_diff = y_diff[layout.idx_exc, :]
+            
+        y_diff_max = float(np.max(np.abs(y_diff)))
+        y_diff_rms = float(np.sqrt(np.mean(y_diff**2)))
+
     if summary.count == 0:
         summary.add(y)
     return summary.pack(
@@ -180,6 +220,10 @@ def solve_fixed_rk4(
         steady_state_reached=steady_reached,
         steady_state_index=steady_index,
         steady_state_start_index=steady_start,
+        y_diff_max=y_diff_max,
+        y_diff_rms=y_diff_rms,
+        dy_max=dy_max,
+        dy_rms=dy_rms,
     )
 
 
@@ -234,6 +278,35 @@ def solve_rk45_with_early_stop(
     steady_index = len(out_time) - 1 if steady_reached else None
     steady_start = max(0, int(steady_index) - checker.window) if steady_reached else None
 
+    y_diff_max = float("nan")
+    y_diff_rms = float("nan")
+    dy_max = float("nan")
+    dy_rms = float("nan")
+
+    if options.diagnostics_enabled:
+        y_final = np.mean(trajectory[max(0, steady_start):], axis=0) if steady_start is not None else trajectory[-1]
+        if options.diagnostics_eval_dy_at == "final":
+            y_eval = trajectory[-1]
+        else:
+            y_eval = y_final
+
+        dy = rhs(float(out_time[-1]), y_eval.ravel(), external_drive, background=None).reshape(layout.n_rates, n_batch)
+        if options.diagnostics_variables == "exc":
+            dy = dy[layout.idx_exc, :]
+            
+        dy_max = float(np.max(np.abs(dy)))
+        dy_rms = float(np.sqrt(np.mean(dy**2)))
+
+        idx = max(0, np.searchsorted(out_time, out_time[-1] - options.diagnostics_probe_dt))
+        y_p = trajectory[idx]
+
+        y_diff = trajectory[-1] - y_p
+        if options.diagnostics_variables == "exc":
+            y_diff = y_diff[layout.idx_exc, :]
+            
+        y_diff_max = float(np.max(np.abs(y_diff)))
+        y_diff_rms = float(np.sqrt(np.mean(y_diff**2)))
+
     return pack_trajectory_result(
         trajectory,
         layout=layout,
@@ -242,6 +315,10 @@ def solve_rk45_with_early_stop(
         steady_state_reached=steady_reached,
         steady_state_index=steady_index,
         steady_state_start_index=steady_start,
+        y_diff_max=y_diff_max,
+        y_diff_rms=y_diff_rms,
+        dy_max=dy_max,
+        dy_rms=dy_rms,
     )
 
 

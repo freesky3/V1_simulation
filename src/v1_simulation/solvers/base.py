@@ -107,6 +107,10 @@ class SolverOptions:
     diffrax_solver: str = "tsit5"
     jax_dtype: str = "float64"
     steady_state_tail_points: int = 1
+    diagnostics_enabled: bool = True
+    diagnostics_probe_dt: float = 1.0
+    diagnostics_eval_dy_at: str = "mean"
+    diagnostics_variables: str = "exc"
 
     @classmethod
     def from_config(
@@ -170,8 +174,11 @@ class SolverOptions:
             diffrax_solver="tsit5" if diffrax_cfg is None else str(diffrax_cfg.solver),
             jax_dtype="float64" if jax_cfg is None else getattr(jax_cfg, "dtype", "float64"),
             steady_state_tail_points=1 if diffrax_cfg is None else getattr(diffrax_cfg, "steady_state_tail_points", 1),
+            diagnostics_enabled=getattr(solver, "diagnostics", None) is not None and bool(solver.diagnostics.enabled),
+            diagnostics_probe_dt=float(solver.diagnostics.probe_dt) if getattr(solver, "diagnostics", None) is not None else 1.0,
+            diagnostics_eval_dy_at=str(solver.diagnostics.eval_dy_at) if getattr(solver, "diagnostics", None) is not None else "mean",
+            diagnostics_variables=str(solver.diagnostics.variables) if getattr(solver, "diagnostics", None) is not None else "exc",
         )
-
 
 @dataclass(frozen=True, slots=True)
 class BatchODEResult:
@@ -204,6 +211,10 @@ class BatchODEResult:
     steady_state_start_index: int | None = None
     summary_start_index: int | None = None
     summary_end_index: int | None = None
+    y_diff_max: float = float("nan")
+    y_diff_rms: float = float("nan")
+    dy_max: float = float("nan")
+    dy_rms: float = float("nan")
 
 
 def validate_solver_options(options: SolverOptions) -> None:
@@ -330,6 +341,10 @@ def pack_trajectory_result(
     steady_state_reached: bool = False,
     steady_state_index: int | None = None,
     steady_state_start_index: int | None = None,
+    y_diff_max: float = float("nan"),
+    y_diff_rms: float = float("nan"),
+    dy_max: float = float("nan"),
+    dy_rms: float = float("nan"),
 ) -> BatchODEResult:
     """Packs a full dynamic trajectory into the public result shape.
 
@@ -420,6 +435,10 @@ def pack_trajectory_result(
         steady_state_start_index=steady_state_start_index,
         summary_start_index=start,
         summary_end_index=end,
+        y_diff_max=y_diff_max,
+        y_diff_rms=y_diff_rms,
+        dy_max=dy_max,
+        dy_rms=dy_rms,
     )
 
 
@@ -432,6 +451,10 @@ def pack_summary_result(
     steady_state_reached: bool = False,
     steady_state_index: int | None = None,
     steady_state_start_index: int | None = None,
+    y_diff_max: float = float("nan"),
+    y_diff_rms: float = float("nan"),
+    dy_max: float = float("nan"),
+    dy_rms: float = float("nan"),
 ) -> BatchODEResult:
     """Packs streaming summary statistics into the public result shape.
 
@@ -474,6 +497,10 @@ def pack_summary_result(
         steady_state_start_index=steady_state_start_index,
         summary_start_index=start,
         summary_end_index=end,
+        y_diff_max=y_diff_max,
+        y_diff_rms=y_diff_rms,
+        dy_max=dy_max,
+        dy_rms=dy_rms,
     )
 
 
