@@ -61,9 +61,44 @@ def load_config(
     if GlobalHydra.instance().is_initialized():
         GlobalHydra.instance().clear()
 
+    CONFIG_GROUPS = {
+        "analysis", "background", "model", "paths", "simulation",
+        "solver", "stimulus", "sweep", "transfer", "training", "experiment"
+    }
+    processed_overrides = []
+    if overrides:
+        for override in overrides:
+            if "=" in override:
+                key, val = override.split("=", 1)
+                clean_key = key.lstrip("+")
+                is_config_group = clean_key in CONFIG_GROUPS
+                if not is_config_group and val.strip().lower() in ("none", "null"):
+                    processed_overrides.append(f"{key}=null")
+                else:
+                    processed_overrides.append(override)
+            else:
+                processed_overrides.append(override)
+
     # 3. Initialize and compose using Hydra
     with initialize_config_dir(config_dir=abs_config_path, version_base="1.3"):
-        cfg = compose(config_name=config_name, overrides=overrides or [])
+        cfg = compose(config_name=config_name, overrides=processed_overrides)
+
+    def _convert_none_strings_to_null(container) -> None:
+        from omegaconf import DictConfig, ListConfig
+        if isinstance(container, DictConfig):
+            for k, v in list(container.items()):
+                if isinstance(v, str) and v.lower() == "none":
+                    container[k] = None
+                elif isinstance(v, (DictConfig, ListConfig)):
+                    _convert_none_strings_to_null(v)
+        elif isinstance(container, ListConfig):
+            for idx, item in enumerate(container):
+                if isinstance(item, str) and item.lower() == "none":
+                    container[idx] = None
+                elif isinstance(item, (DictConfig, ListConfig)):
+                    _convert_none_strings_to_null(item)
+
+    _convert_none_strings_to_null(cfg)
 
     # 4. Merge composed config with our structured schema for strict validation and resolution
     schema = OmegaConf.structured(RootConfig)

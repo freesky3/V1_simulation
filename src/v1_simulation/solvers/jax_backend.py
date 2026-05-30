@@ -674,7 +674,7 @@ def _make_jax_rk4(
     early_stop_min_time: float = 0.0,
     early_stop_f_atol: float = 1e-4,
     early_stop_f_rtol: float = 1e-4,
-    early_stop_norm: str = "max",
+    early_stop_norm: str = "l2",
     early_stop_rk4_window: int = 5,
     early_stop_min_steps: int = 20,
 ):

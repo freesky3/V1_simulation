@@ -419,7 +419,7 @@ class EarlyStopConfig:
     min_steps: int = 20
     f_atol: float = 1e-4
     f_rtol: float = 1e-4
-    norm: str = "max"
+    norm: str = "l2"  # "max" or "l2"
     rk4_window: int = 5
     only_static_input: bool = True
 
