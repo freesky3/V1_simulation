@@ -53,6 +53,7 @@ class TransferTable:
     """Look-up table for neuron firing rates as a function of mean input (mu)."""
     mu: NDArray[np.float64]
     rate: NDArray[np.float64]
+    rate_max: float | None = None
 
     def __post_init__(self) -> None:
         if self.mu.ndim != 1 or self.rate.ndim != 1:
@@ -63,6 +64,8 @@ class TransferTable:
             raise ValueError("transfer table needs at least two points.")
         if not np.all(np.diff(self.mu) > 0):
             raise ValueError("mu values must be strictly increasing.")
+        if self.rate_max is not None and self.rate_max <= 0:
+            raise ValueError("rate_max must be positive when set.")
 
     def __call__(self, mu: ArrayLike) -> float | NDArray[np.float64]:
         """Interpolates firing rates for the given mu inputs.
@@ -71,11 +74,13 @@ class TransferTable:
             mu: Input mean potential values.
 
         Returns:
-            The interpolated firing rate(s).
+            The interpolated firing rate(s), clipped to [0, rate_max] if rate_max is set.
         """
         arr = np.asarray(mu, dtype=float)
         was_scalar = arr.ndim == 0
         out = np.interp(arr, self.mu, self.rate, left=self.rate[0], right=self.rate[-1])
+        if self.rate_max is not None:
+            out = np.clip(out, 0.0, self.rate_max)
         return float(out) if was_scalar else out
 
     def as_arrays(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -255,6 +260,7 @@ def build_transfer_table(
     cfg_transfer: TransferConfig,
     grid: TransferGrid,
     grid_step: float = DEFAULT_INTEGRAL_GRID_STEP,
+    rate_max: float | None = None,
 ) -> TransferTable:
     """Builds a lookup table of firing rates for a given grid of mu values.
 
@@ -263,13 +269,14 @@ def build_transfer_table(
         cfg_transfer: Transfer configuration.
         grid: The grid of mu values.
         grid_step: Step size for Siegert kernel integration.
+        rate_max: Optional maximum firing rate clamp.
 
     Returns:
         A TransferTable instance.
     """
     mu = grid.values()
     rate = siegert_rate(mu, tau_m=tau_m, cfg_transfer=cfg_transfer, grid_step=grid_step)
-    return TransferTable(mu=mu, rate=np.asarray(rate, dtype=float))
+    return TransferTable(mu=mu, rate=np.asarray(rate, dtype=float), rate_max=rate_max)
 
 
 def build_transfer_tables(
@@ -288,17 +295,20 @@ def build_transfer_tables(
     Returns:
         A TransferTables instance containing excitatory and inhibitory lookup tables.
     """
+    rate_max = getattr(cfg_transfer, 'rate_max', None)
     return TransferTables(
         excitatory=build_transfer_table(
             tau_m=cfg_transfer.tau_e,
             cfg_transfer=cfg_transfer,
             grid=grid,
             grid_step=grid_step,
+            rate_max=rate_max,
         ),
         inhibitory=build_transfer_table(
             tau_m=cfg_transfer.tau_i,
             cfg_transfer=cfg_transfer,
             grid=grid,
             grid_step=grid_step,
+            rate_max=rate_max,
         ),
     )

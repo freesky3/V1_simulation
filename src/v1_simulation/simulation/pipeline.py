@@ -295,12 +295,15 @@ def run_bcm_training(
                 images=_sample_paths_for_log(batch),
             )
             run_artifacts.append_log(log_row)
-            progress.set_postfix(
+            postfix = dict(
                 samples=trainer.state.samples_seen,
                 aE=f"{log_row.aE_mean:.3g}",
                 aI=f"{log_row.aI_mean:.3g}",
                 updated=log_row.updated,
             )
+            if log_row.skipped_bad_batch:
+                postfix["BAD"] = trainer.state.consecutive_bad_batches
+            progress.set_postfix(**postfix)
 
             if trainer.state.step % int(cfg.training.bcm.save_every) == 0:
                 save_checkpoint(

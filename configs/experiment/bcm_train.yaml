@@ -4,6 +4,15 @@ seed: 42
 job_name: bcm_train
 mode: train
 
+model:
+  connectivity:
+    j: 1.9
+    g: 6.0
+
+solver:
+  transfer:
+    rate_max: 100.0
+
 training:
   enabled: true
   natural_image:
@@ -26,7 +35,7 @@ training:
     theta_init: 1.0
     theta_floor: 1.0e-3
     w_max: 30.0
-    row_sum_max_scale: 1.05
+    row_sum_max_scale: 1.0
     save_every: 100
     dynamic_steady_state: true
     steady_state_abs_tol: 1.0e-3

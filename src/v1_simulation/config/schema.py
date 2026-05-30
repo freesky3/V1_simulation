@@ -395,6 +395,7 @@ class TransferConfig:
     theta: float = 20.0
     v_r: float = 10.0
     mu_tab_max: float = 100.0
+    rate_max: Optional[float] = None
 
 # ==========================================
 # 7. Solver Configuration
@@ -478,6 +479,9 @@ class TrainingBCMConfig:
     steady_state_rel_tol: float = 1.0e-5
     steady_state_window: int = 5
     steady_state_min_tau: float = 5.0
+    rate_explosion_threshold: Optional[float] = 80.0
+    saturation_fraction_threshold: float = 0.05
+    max_consecutive_bad_batches: int = 5
 
 @dataclass
 class TrainingConfig:

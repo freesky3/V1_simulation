@@ -8,3 +8,4 @@ tau_rp: 0.002
 theta: 20.0
 v_r: 10.0
 mu_tab_max: 100.0
+rate_max: null

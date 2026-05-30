@@ -43,6 +43,11 @@ def _validate_transfer_config(trans: TransferConfig, path: str) -> None:
         raise ValueError(f"{path} reset potential v_r must be positive, got {trans.v_r}")
     if trans.mu_tab_max <= 0.0:
         raise ValueError(f"{path} mu_tab_max must be positive, got {trans.mu_tab_max}")
+    rate_max = getattr(trans, 'rate_max', None)
+    if rate_max is not None:
+        rate_max = float(rate_max)
+        if not math.isfinite(rate_max) or rate_max <= 0.0:
+            raise ValueError(f"{path}.rate_max must be positive and finite when set, got {rate_max}")
 
 
 def _validate_solver_method(backend: str, method: str) -> None:
@@ -318,4 +323,18 @@ def validate_config(cfg: RootConfig) -> None:
         if _finite_float(bcm.steady_state_min_tau, "training.bcm.steady_state_min_tau") < 0.0:
             raise ValueError(
                 f"training.bcm.steady_state_min_tau must be non-negative, got {bcm.steady_state_min_tau}"
+            )
+        rate_exp = _optional_finite_float(bcm.rate_explosion_threshold, "training.bcm.rate_explosion_threshold")
+        if rate_exp is not None and rate_exp <= 0.0:
+            raise ValueError(
+                f"training.bcm.rate_explosion_threshold must be positive when set, got {bcm.rate_explosion_threshold}"
+            )
+        sat_frac = _finite_float(bcm.saturation_fraction_threshold, "training.bcm.saturation_fraction_threshold")
+        if sat_frac < 0.0 or sat_frac > 1.0:
+            raise ValueError(
+                f"training.bcm.saturation_fraction_threshold must be in [0.0, 1.0], got {bcm.saturation_fraction_threshold}"
+            )
+        if bcm.max_consecutive_bad_batches <= 0:
+            raise ValueError(
+                f"training.bcm.max_consecutive_bad_batches must be positive, got {bcm.max_consecutive_bad_batches}"
             )
