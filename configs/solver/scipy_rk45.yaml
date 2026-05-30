@@ -2,3 +2,12 @@
 
 backend: scipy
 method: RK45
+early_stop:
+  enabled: false
+  min_time: 0.2
+  min_steps: 20
+  f_atol: 1e-4
+  f_rtol: 1e-4
+  norm: max
+  rk4_window: 5
+  only_static_input: true

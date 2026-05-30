@@ -42,3 +42,6 @@ training:
     steady_state_rel_tol: 1.0e-5
     steady_state_window: 5
     steady_state_min_tau: 5.0
+    rate_explosion_threshold: 80.0
+    saturation_fraction_threshold: 0.05
+    max_consecutive_bad_batches: 5

@@ -230,7 +230,7 @@ class SolverOptimizationTests(unittest.TestCase):
                 common_args["phi_inh_x"], common_args["phi_inh_y"],
                 common_args["tau_exc"], common_args["tau_inh"],
             )
-            return jnp.sum(out)
+            return jnp.sum(out[0])
 
         def loss_dynamic(w_exc):
             out = run_dynamic(
@@ -244,7 +244,7 @@ class SolverOptimizationTests(unittest.TestCase):
                 common_args["phi_inh_x"], common_args["phi_inh_y"],
                 common_args["tau_exc"], common_args["tau_inh"],
             )
-            return jnp.sum(out)
+            return jnp.sum(out[0])
 
         grad_static = jax.grad(loss_static)(W_exc)
         grad_dynamic = jax.grad(loss_dynamic)(W_exc)

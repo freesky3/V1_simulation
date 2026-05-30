@@ -291,7 +291,7 @@ def _apply_training_min_time(
     training_bcm: TrainingBCMConfig | None,
     transfer_config: TransferConfig,
 ) -> SolverOptions:
-    if not options.stop_at_steady_state or options.steady_state_min_time is not None:
+    if not options.early_stop_enabled or options.early_stop_min_time > 0.0:
         return options
     if training_bcm is None:
         return options
@@ -299,7 +299,7 @@ def _apply_training_min_time(
         float(transfer_config.tau_e),
         float(transfer_config.tau_i),
     )
-    return replace(options, steady_state_min_time=min_time)
+    return replace(options, early_stop_min_time=min_time)
 
 
 def _background_stage(

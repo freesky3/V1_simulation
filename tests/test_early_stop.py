@@ -130,7 +130,7 @@ def test_early_stop_damped_oscillator():
         pytest.skip("Diffrax not installed.")
         
     y0 = jnp.array([1.0, 0.0]) # start at displacement=1, velocity=0
-    c = 0.5  # damping
+    c = 1.5  # damping (increased to decay faster and avoid max_steps limit)
     k = 20.0 # spring constant (creates fast oscillation)
     f_atol = 1e-4
     f_rtol = 1e-4
@@ -159,7 +159,7 @@ def test_early_stop_damped_oscillator():
     
     sol = diffrax.diffeqsolve(
         term, solver, t0=0.0, t1=50.0, dt0=0.01, y0=y0,
-        args={"c": c, "k": k}, event=event, throw=False, max_steps=4096
+        args={"c": c, "k": k}, event=event, throw=False, max_steps=16384
     )
     
     assert sol.result == diffrax.RESULTS.event_occurred

@@ -50,8 +50,8 @@ class SolverConfigTests(unittest.TestCase):
         simulate_options = SolverOptions.from_config(cfg.solver)
         training_options = SolverOptions.from_config(cfg.solver, training_bcm=cfg.training.bcm)
 
-        self.assertFalse(simulate_options.stop_at_steady_state)
-        self.assertTrue(training_options.stop_at_steady_state)
+        self.assertFalse(simulate_options.early_stop_enabled)
+        self.assertTrue(training_options.early_stop_enabled)
 
 
 class WilsonCowanSolverTests(unittest.TestCase):

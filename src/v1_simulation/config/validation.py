@@ -86,6 +86,7 @@ def validate_config(cfg: RootConfig) -> None:
 
     # 2. Analysis Config
     analysis = cfg.analysis
+    _require_bool(analysis.save_plots, "analysis.save_plots")
     if analysis.num_surrogates <= 0:
         raise ValueError(f"analysis.num_surrogates must be positive, got {analysis.num_surrogates}")
     if not (0.0 < analysis.center_side_fraction <= 1.0):
@@ -139,6 +140,10 @@ def validate_config(cfg: RootConfig) -> None:
     model = cfg.model
     # Layers
     layers = model.layers
+    if layers.N_theta <= 0:
+        raise ValueError(f"model.layers.N_theta must be positive, got {layers.N_theta}")
+    if layers.l4.N_theta <= 0:
+        raise ValueError(f"model.layers.l4.N_theta must be positive, got {layers.l4.N_theta}")
     if layers.l4.n_side <= 0:
         raise ValueError(f"model.layers.l4.n_side must be positive, got {layers.l4.n_side}")
     if layers.l4.region_size <= 0.0:
@@ -198,6 +203,24 @@ def validate_config(cfg: RootConfig) -> None:
         raise ValueError(f"solver.backend must be 'scipy', 'jax-rk4', or 'diffrax', got '{sol.backend}'")
     _validate_solver_method(sol.backend, sol.method)
     _validate_transfer_config(sol.transfer, "solver.transfer")
+    if getattr(sol, 'early_stop', None) is not None:
+        _require_bool(sol.early_stop.enabled, "solver.early_stop.enabled")
+        _finite_float(sol.early_stop.min_time, "solver.early_stop.min_time")
+        if sol.early_stop.min_time < 0.0:
+            raise ValueError(f"solver.early_stop.min_time must be non-negative, got {sol.early_stop.min_time}")
+        if sol.early_stop.min_steps <= 0:
+            raise ValueError(f"solver.early_stop.min_steps must be positive, got {sol.early_stop.min_steps}")
+        _finite_float(sol.early_stop.f_atol, "solver.early_stop.f_atol")
+        if sol.early_stop.f_atol < 0.0:
+            raise ValueError(f"solver.early_stop.f_atol must be non-negative, got {sol.early_stop.f_atol}")
+        _finite_float(sol.early_stop.f_rtol, "solver.early_stop.f_rtol")
+        if sol.early_stop.f_rtol < 0.0:
+            raise ValueError(f"solver.early_stop.f_rtol must be non-negative, got {sol.early_stop.f_rtol}")
+        if sol.early_stop.norm not in {"max", "l2"}:
+            raise ValueError(f"solver.early_stop.norm must be 'max' or 'l2', got {sol.early_stop.norm!r}")
+        if sol.early_stop.rk4_window <= 0:
+            raise ValueError(f"solver.early_stop.rk4_window must be positive, got {sol.early_stop.rk4_window}")
+        _require_bool(sol.early_stop.only_static_input, "solver.early_stop.only_static_input")
     if sol.jax is not None:
         if sol.jax.dense_max_mb <= 0.0:
             raise ValueError(f"solver.jax.dense_max_mb must be positive, got {sol.jax.dense_max_mb}")
@@ -338,3 +361,11 @@ def validate_config(cfg: RootConfig) -> None:
             raise ValueError(
                 f"training.bcm.max_consecutive_bad_batches must be positive, got {bcm.max_consecutive_bad_batches}"
             )
+
+    # 10. Sweep Config
+    if getattr(cfg, 'sweep', None) is not None:
+        _require_bool(cfg.sweep.resume, "sweep.resume")
+        if cfg.sweep.max_workers <= 0:
+            raise ValueError(f"sweep.max_workers must be positive, got {cfg.sweep.max_workers}")
+        if not isinstance(cfg.sweep.grid, dict):
+            raise TypeError(f"sweep.grid must be a dictionary/mapping, got {type(cfg.sweep.grid).__name__}")

@@ -43,7 +43,7 @@ def solve_scipy(
     if options.method == "RK4":
         return solve_fixed_rk4(rhs, external_drive, layout, n_batch, time, options)
 
-    if options.stop_at_steady_state:
+    if options.early_stop_enabled:
         if options.method != "RK45":
             raise ValueError("Early stopping is only supported for SciPy RK4 and RK45.")
         return solve_rk45_with_early_stop(rhs, external_drive, layout, n_batch, time, options)
@@ -104,7 +104,7 @@ def solve_fixed_rk4(
         trajectory[0] = y.reshape(layout.n_rates, n_batch)
 
     summary = _TrajectorySummary(layout.n_rates, n_batch)
-    checker = _SteadyStateChecker.from_options(options, rhs) if options.stop_at_steady_state else None
+    checker = _SteadyStateChecker.from_options(options, rhs) if options.early_stop_enabled else None
     tail = deque([y.copy()], maxlen=(checker.window + 1 if checker is not None else 1))
 
     steady_reached = False

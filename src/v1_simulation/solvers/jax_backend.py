@@ -409,6 +409,11 @@ def _make_diffrax_diffeqsolve(
     store_trajectory: bool,
     is_static: bool,
     tail_points: int,
+    early_stop_enabled: bool = False,
+    early_stop_min_time: float = 0.0,
+    early_stop_f_atol: float = 1e-4,
+    early_stop_f_rtol: float = 1e-4,
+    early_stop_norm: str = "max",
 ):
     """Creates a JIT-compiled JAX function to solve the Wilson-Cowan ODEs using Diffrax.
 
