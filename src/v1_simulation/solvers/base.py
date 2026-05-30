@@ -94,11 +94,14 @@ class SolverOptions:
     backend: BackendName = "scipy"
     method: str = "RK4"
     store_trajectory: bool = True
-    stop_at_steady_state: bool = False
-    steady_state_abs_tol: float = 1.0e-3
-    steady_state_rel_tol: float = 1.0e-5
-    steady_state_window: int = 5
-    steady_state_min_time: float | None = None
+    early_stop_enabled: bool = False
+    early_stop_min_time: float = 0.2
+    early_stop_min_steps: int = 20
+    early_stop_f_atol: float = 1.0e-4
+    early_stop_f_rtol: float = 1.0e-4
+    early_stop_norm: str = "max"
+    early_stop_rk4_window: int = 5
+    early_stop_only_static_input: bool = True
     jax_prefer_sparse: bool = True
     jax_dense_max_mb: float = 128.0
     diffrax_solver: str = "tsit5"
@@ -125,18 +128,28 @@ class SolverOptions:
         Returns:
             A resolved SolverOptions instance.
         """
-        should_stop = False if stop_at_steady_state is None else bool(stop_at_steady_state)
-        min_time = None
-        abs_tol = 1.0e-3
-        rel_tol = 1.0e-5
-        window = 5
+        # Override from training config if steady_state overrides early_stop config,
+        # but prefer early_stop config fields directly from solver configuration if they exist.
+        should_stop = solver.early_stop.enabled
+        min_time = solver.early_stop.min_time
+        f_atol = solver.early_stop.f_atol
+        f_rtol = solver.early_stop.f_rtol
+        window = solver.early_stop.rk4_window
+        min_steps = solver.early_stop.min_steps
+        norm = solver.early_stop.norm
+        only_static = solver.early_stop.only_static_input
 
-        if training_bcm is not None:
-            should_stop = bool(training_bcm.dynamic_steady_state) if stop_at_steady_state is None else should_stop
-            abs_tol = float(training_bcm.steady_state_abs_tol)
-            rel_tol = float(training_bcm.steady_state_rel_tol)
-            window = int(training_bcm.steady_state_window)
-            min_time = None
+        # Fallback to older BCM params if early_stop is not enabled but BCM dynamic_steady_state is true
+        if training_bcm is not None and not should_stop:
+            if training_bcm.dynamic_steady_state:
+                should_stop = True
+                f_atol = float(training_bcm.steady_state_abs_tol)
+                f_rtol = float(training_bcm.steady_state_rel_tol)
+                window = int(training_bcm.steady_state_window)
+                min_time = float(training_bcm.steady_state_min_tau) * float(solver.transfer.tau_e)
+
+        if stop_at_steady_state is not None:
+            should_stop = bool(stop_at_steady_state)
 
         jax_cfg = solver.jax
         diffrax_cfg = solver.diffrax
@@ -144,11 +157,14 @@ class SolverOptions:
             backend=solver.backend,  # type: ignore[arg-type]
             method=str(solver.method),
             store_trajectory=bool(store_trajectory),
-            stop_at_steady_state=should_stop,
-            steady_state_abs_tol=abs_tol,
-            steady_state_rel_tol=rel_tol,
-            steady_state_window=window,
-            steady_state_min_time=min_time,
+            early_stop_enabled=should_stop,
+            early_stop_f_atol=f_atol,
+            early_stop_f_rtol=f_rtol,
+            early_stop_rk4_window=window,
+            early_stop_min_time=min_time,
+            early_stop_min_steps=min_steps,
+            early_stop_norm=norm,
+            early_stop_only_static_input=only_static,
             jax_prefer_sparse=True if jax_cfg is None else bool(jax_cfg.prefer_sparse),
             jax_dense_max_mb=128.0 if jax_cfg is None else float(jax_cfg.dense_max_mb),
             diffrax_solver="tsit5" if diffrax_cfg is None else str(diffrax_cfg.solver),

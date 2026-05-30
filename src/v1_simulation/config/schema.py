@@ -413,11 +413,23 @@ class DiffraxSolverConfig:
     steady_state_tail_points: int = 1
 
 @dataclass
+class EarlyStopConfig:
+    enabled: bool = False
+    min_time: float = 0.2
+    min_steps: int = 20
+    f_atol: float = 1e-4
+    f_rtol: float = 1e-4
+    norm: str = "max"
+    rk4_window: int = 5
+    only_static_input: bool = True
+
+@dataclass
 class SolverConfig:
     backend: str = "scipy"
     method: str = "RK4"
     jax: Optional[JaxSolverConfig] = None
     diffrax: Optional[DiffraxSolverConfig] = None
+    early_stop: EarlyStopConfig = field(default_factory=EarlyStopConfig)
     transfer: TransferConfig = field(default_factory=TransferConfig)
 
 # ==========================================

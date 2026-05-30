@@ -105,12 +105,6 @@ def solve_jax_rk4(
     """
     if options.method != "RK4":
         raise ValueError("solver.backend 'jax-rk4' requires solver.method 'RK4'.")
-    if options.stop_at_steady_state:
-        warnings.warn(
-            "jax-rk4 currently evaluates the full time grid; use scipy RK4/RK45 for early stopping.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
 
     jax, jnp = _require_jax("jax-rk4")
     is_static = getattr(external_drive, "is_time_dependent", None) is False
@@ -132,6 +126,13 @@ def solve_jax_rk4(
                 np.all(ax_left == ax_left[0]) and np.all(ax_mid == ax_left[0]) and np.all(ax_right == ax_left[0])
             )
         ax_0 = ax_left[0]
+
+    if options.early_stop_enabled:
+        if options.early_stop_only_static_input and not is_static:
+            raise ValueError(
+                "Early stopping by steady-state is only valid for static deterministic input. "
+                "Disable it for OU/time-varying background."
+            )
 
     bg_left_e, bg_mid_e, bg_right_e, bg_left_i, bg_mid_i, bg_right_i = _precompute_rk4_background(
         rhs.background_trace,
@@ -157,10 +158,27 @@ def solve_jax_rk4(
     )
 
     y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=dtype)
-    cache_key = (options.store_trajectory, is_static)
+    cache_key = (
+        options.store_trajectory, 
+        is_static,
+        options.early_stop_enabled,
+        options.early_stop_min_time,
+        options.early_stop_f_atol,
+        options.early_stop_f_rtol,
+        options.early_stop_norm,
+        options.early_stop_rk4_window,
+        options.early_stop_min_steps,
+    )
     if cache_key not in _jax_rk4_solve_cache:
         _jax_rk4_solve_cache[cache_key] = _make_jax_rk4(
-            jax, jnp, store_trajectory=options.store_trajectory, is_static=is_static
+            jax, jnp, store_trajectory=options.store_trajectory, is_static=is_static,
+            early_stop_enabled=options.early_stop_enabled,
+            early_stop_min_time=options.early_stop_min_time,
+            early_stop_f_atol=options.early_stop_f_atol,
+            early_stop_f_rtol=options.early_stop_f_rtol,
+            early_stop_norm=options.early_stop_norm,
+            early_stop_rk4_window=options.early_stop_rk4_window,
+            early_stop_min_steps=options.early_stop_min_steps,
         )
     run = _jax_rk4_solve_cache[cache_key]
 
@@ -197,21 +215,28 @@ def solve_jax_rk4(
     )
 
     if options.store_trajectory:
-        jax.block_until_ready(out)
+        y_all, ss_reached, ss_index = out
+        jax.block_until_ready(y_all)
         return pack_trajectory_result(
-            np.asarray(out, dtype=np.float64),
+            np.asarray(y_all, dtype=np.float64),
             layout=layout,
             time=time,
             store_trajectory=True,
+            steady_state_reached=bool(ss_reached),
+            steady_state_index=int(ss_index) if ss_reached else None,
+            steady_state_start_index=int(ss_index) if ss_reached else None,
         )
 
-    mean, std = out
+    mean, std, ss_reached, ss_index = out
     jax.block_until_ready(mean)
     return pack_summary_result(
         mean_rates=np.asarray(mean, dtype=np.float64),
         std_rates=np.asarray(std, dtype=np.float64),
         layout=layout,
         time=time,
+        steady_state_reached=bool(ss_reached),
+        steady_state_index=int(ss_index) if ss_reached else None,
+        steady_state_start_index=int(ss_index) if ss_reached else None,
     )
 
 
@@ -242,12 +267,6 @@ def solve_diffrax(
     """
     if options.method != "adaptive":
         raise ValueError("solver.backend 'diffrax' requires solver.method 'adaptive'.")
-    if options.stop_at_steady_state:
-        warnings.warn(
-            "diffrax backend currently evaluates the full time grid; use scipy RK4/RK45 for early stopping.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
 
     jax, jnp = _require_jax("diffrax")
     diffrax = _require_diffrax()
@@ -266,6 +285,13 @@ def solve_diffrax(
         if getattr(external_drive, "is_time_dependent", None) is None:
             is_static = bool(np.all(ax_t == ax_t[0]))
         ax_0 = ax_t[0]
+
+    if options.early_stop_enabled:
+        if options.early_stop_only_static_input and not is_static:
+            raise ValueError(
+                "Early stopping by steady-state is only valid for static deterministic input. "
+                "Disable it for OU/time-varying background."
+            )
 
     bg_e, bg_i = _precompute_diffrax_background(
         rhs.background_trace,
@@ -293,7 +319,17 @@ def solve_diffrax(
 
     y0 = jnp.zeros((layout.n_rates, int(n_batch)), dtype=dtype)
     tail_points = options.steady_state_tail_points
-    cache_key = (options.diffrax_solver, options.store_trajectory, is_static, tail_points)
+    cache_key = (
+        options.diffrax_solver, 
+        options.store_trajectory, 
+        is_static, 
+        tail_points,
+        options.early_stop_enabled,
+        options.early_stop_min_time,
+        options.early_stop_f_atol,
+        options.early_stop_f_rtol,
+        options.early_stop_norm,
+    )
     if cache_key not in _diffrax_solve_cache:
         _diffrax_solve_cache[cache_key] = _make_diffrax_diffeqsolve(
             jax,
@@ -303,6 +339,11 @@ def solve_diffrax(
             store_trajectory=options.store_trajectory,
             is_static=is_static,
             tail_points=tail_points,
+            early_stop_enabled=options.early_stop_enabled,
+            early_stop_min_time=options.early_stop_min_time,
+            early_stop_f_atol=options.early_stop_f_atol,
+            early_stop_f_rtol=options.early_stop_f_rtol,
+            early_stop_norm=options.early_stop_norm,
         )
     run = _diffrax_solve_cache[cache_key]
 
@@ -332,22 +373,30 @@ def solve_diffrax(
         jnp.asarray(float(rhs.tau_inh), dtype=dtype),
     )
 
+
     if options.store_trajectory:
-        jax.block_until_ready(out)
+        y_all, ss_reached, ss_index = out
+        jax.block_until_ready(y_all)
         return pack_trajectory_result(
-            np.asarray(out, dtype=np.float64),
+            np.asarray(y_all, dtype=np.float64),
             layout=layout,
             time=time,
             store_trajectory=True,
+            steady_state_reached=bool(ss_reached),
+            steady_state_index=int(ss_index) if ss_reached else None,
+            steady_state_start_index=int(ss_index) if ss_reached else None,
         )
 
-    mean, std = out
+    mean, std, ss_reached, ss_index = out
     jax.block_until_ready(mean)
     return pack_summary_result(
         mean_rates=np.asarray(mean, dtype=np.float64),
         std_rates=np.asarray(std, dtype=np.float64),
         layout=layout,
         time=time,
+        steady_state_reached=bool(ss_reached),
+        steady_state_index=int(ss_index) if ss_reached else None,
+        steady_state_start_index=int(ss_index) if ss_reached else None,
     )
 
 
@@ -492,6 +541,29 @@ def _make_diffrax_diffeqsolve(
         else:
             saveat = diffrax.SaveAt(t1=True)
 
+        if early_stop_enabled:
+            def cond_fn(state, **kwargs):
+                t = state.t
+                y = state.y
+                args_val = getattr(state, "args", args)
+                dy = vector_field(t, y, args_val)
+                if early_stop_norm == "max":
+                    f_norm = jnp.max(jnp.abs(dy))
+                    y_norm = jnp.max(jnp.abs(y))
+                else:
+                    f_norm = jnp.sqrt(jnp.mean(jnp.square(dy)))
+                    y_norm = jnp.sqrt(jnp.mean(jnp.square(y)))
+                
+                is_steady = f_norm < early_stop_f_atol + early_stop_f_rtol * y_norm
+                return jnp.logical_and(t >= early_stop_min_time, is_steady)
+
+            if hasattr(diffrax, "Event"):
+                event = diffrax.Event(cond_fn)
+            else:
+                event = diffrax.DiscreteTerminatingEvent(cond_fn)
+        else:
+            event = None
+
         sol = diffrax.diffeqsolve(
             term,
             solver,
@@ -502,19 +574,30 @@ def _make_diffrax_diffeqsolve(
             args=args,
             saveat=saveat,
             stepsize_controller=stepsize_controller,
+            event=event,
+            max_steps=4096 if early_stop_enabled else 4096,
+            throw=False,
         )
 
         y_all = sol.ys
+        
+        if early_stop_enabled:
+            ss_reached = jnp.where(sol.result == diffrax.RESULTS.event_occurred, 1, 0)
+            ss_index = sol.stats["num_steps"]
+        else:
+            ss_reached = 0
+            ss_index = -1
+
         if store_trajectory:
-            return y_all
+            return y_all, ss_reached, ss_index
 
         if tail_points > 1:
-            return jnp.mean(y_all, axis=0), jnp.std(y_all, axis=0)
+            return jnp.mean(y_all, axis=0), jnp.std(y_all, axis=0), ss_reached, ss_index
         else:
             # SaveAt(t1=True) returns ys with shape (1, n_rates, n_batch).
             # Squeeze the leading singleton so downstream gets (n_rates, n_batch).
             y_final = y_all[0]
-            return y_final, jnp.zeros_like(y_final)
+            return y_final, jnp.zeros_like(y_final), ss_reached, ss_index
 
     return jax.jit(run)
 
@@ -570,7 +653,20 @@ def _precompute_diffrax_background(
     )
 
 
-def _make_jax_rk4(jax, jnp, *, store_trajectory: bool, is_static: bool):
+def _make_jax_rk4(
+    jax, 
+    jnp, 
+    *, 
+    store_trajectory: bool, 
+    is_static: bool,
+    early_stop_enabled: bool = False,
+    early_stop_min_time: float = 0.0,
+    early_stop_f_atol: float = 1e-4,
+    early_stop_f_rtol: float = 1e-4,
+    early_stop_norm: str = "max",
+    early_stop_rk4_window: int = 5,
+    early_stop_min_steps: int = 20,
+):
     """Creates a JIT-compiled JAX RK4 ODE solver for the Wilson-Cowan system.
 
     Receives pre-sliced weight sub-matrices W_exc, W_inh, W_ext and (when is_static=True)
@@ -700,27 +796,99 @@ def _make_jax_rk4(jax, jnp, *, store_trajectory: bool, is_static: bool):
             y_next = y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
             return y_next, y_next
 
-        _, ys = jax.lax.scan(
-            scan_step,
-            y0,
-            (
-                dts,
-                ax_left,
-                ax_mid,
-                ax_right,
-                bg_left_e,
-                bg_mid_e,
-                bg_right_e,
-                bg_left_i,
-                bg_mid_i,
-                bg_right_i,
-            ),
-        )
-        y_all = jnp.concatenate([y0[jnp.newaxis, :, :], ys], axis=0)
+        if not early_stop_enabled:
+            _, ys = jax.lax.scan(
+                scan_step,
+                y0,
+                (
+                    dts,
+                    ax_left,
+                    ax_mid,
+                    ax_right,
+                    bg_left_e,
+                    bg_mid_e,
+                    bg_right_e,
+                    bg_left_i,
+                    bg_mid_i,
+                    bg_right_i,
+                ),
+            )
+            y_all = jnp.concatenate([y0[jnp.newaxis, :, :], ys], axis=0)
+            ss_reached = 0
+            ss_index = -1
+        else:
+            max_steps = time.shape[0] - 1
+            ys_init = jnp.zeros((max_steps + 1, y0.shape[0], y0.shape[1]), dtype=y0.dtype)
+            ys_init = ys_init.at[0].set(y0)
+
+            # state: (step_idx, y, ys, stable_steps)
+            init_val = (jnp.int32(0), y0, ys_init, jnp.int32(0))
+
+            def cond_fun(val):
+                step_idx, _, _, stable_steps = val
+                not_done = step_idx < max_steps
+                not_stable = stable_steps < early_stop_rk4_window
+                return jnp.logical_and(not_done, not_stable)
+
+            def body_fun(val):
+                step_idx, y, ys, stable_steps = val
+                xs = (
+                    dts[step_idx],
+                    ax_left[step_idx],
+                    ax_mid[step_idx],
+                    ax_right[step_idx],
+                    bg_left_e[step_idx],
+                    bg_mid_e[step_idx],
+                    bg_right_e[step_idx],
+                    bg_left_i[step_idx],
+                    bg_mid_i[step_idx],
+                    bg_right_i[step_idx],
+                )
+                _, y_next = scan_step(y, xs)
+                ys_next = ys.at[step_idx + 1].set(y_next)
+
+                dt = dts[step_idx]
+                f_est = (y_next - y) / dt
+
+                if early_stop_norm == "max":
+                    f_norm = jnp.max(jnp.abs(f_est))
+                    y_norm = jnp.max(jnp.abs(y_next))
+                else:
+                    f_norm = jnp.sqrt(jnp.mean(jnp.square(f_est)))
+                    y_norm = jnp.sqrt(jnp.mean(jnp.square(y_next)))
+
+                is_stable = f_norm < early_stop_f_atol + early_stop_f_rtol * y_norm
+                t = time[step_idx + 1]
+                can_stop = jnp.logical_and(t >= early_stop_min_time, step_idx + 1 >= early_stop_min_steps)
+                is_stable = jnp.logical_and(is_stable, can_stop)
+
+                stable_steps = jnp.where(is_stable, stable_steps + 1, 0)
+                return (step_idx + 1, y_next, ys_next, stable_steps)
+
+            final_val = jax.lax.while_loop(cond_fun, body_fun, init_val)
+            step_idx, final_y, y_all, stable_steps = final_val
+
+            ss_reached = jnp.where(stable_steps >= early_stop_rk4_window, 1, 0)
+            ss_index = step_idx
+
         if store_trajectory:
-            return y_all
-        tail = y_all[int(time.shape[0] * 2 / 3) :, :, :]
-        return jnp.mean(tail, axis=0), jnp.std(tail, axis=0)
+            return y_all, ss_reached, ss_index
+        
+        if early_stop_enabled:
+            valid_len = ss_index + 1
+            start_idx = jnp.maximum(0, valid_len - valid_len // 3)
+            mask = jnp.arange(y_all.shape[0]) >= start_idx
+            mask = jnp.logical_and(mask, jnp.arange(y_all.shape[0]) < valid_len)
+            mask = mask[:, jnp.newaxis, jnp.newaxis]
+            
+            # Avoid division by zero
+            sum_mask = jnp.maximum(1, jnp.sum(mask, axis=0))
+            tail_mean = jnp.sum(y_all * mask, axis=0) / sum_mask
+            tail_std = jnp.sqrt(jnp.sum(jnp.square(y_all - tail_mean) * mask, axis=0) / sum_mask)
+            return tail_mean, tail_std, ss_reached, ss_index
+        else:
+            tail = y_all[int(time.shape[0] * 2 / 3) :, :, :]
+            return jnp.mean(tail, axis=0), jnp.std(tail, axis=0), ss_reached, ss_index
 
     return jax.jit(run)
 
