@@ -45,3 +45,5 @@ training:
     rate_explosion_threshold: 80.0
     saturation_fraction_threshold: 0.05
     max_consecutive_bad_batches: 5
+    duration_tau_e: 30.0
+

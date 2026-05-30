@@ -126,13 +126,28 @@ class BCMPlasticityTests(unittest.TestCase):
         self.assertEqual(cfg.mode, "train")
         self.assertTrue(cfg.training.enabled)
         self.assertEqual(cfg.training.bcm.theta_update_order, "pre")
+        self.assertEqual(cfg.training.bcm.duration_tau_e, 30.0)
 
+        # 1. Test invalid theta_update_order
         bad = RootConfig()
         bad.training.enabled = True
         bad.training.natural_image.dir = "data/vanhateren_iml"
         bad.training.bcm.theta_update_order = "middle"
         with self.assertRaisesRegex(ValueError, "theta_update_order"):
             validate_config(bad)
+
+        # 2. Test invalid duration_tau_e (<= 0.0)
+        bad_duration = RootConfig()
+        bad_duration.training.enabled = True
+        bad_duration.training.natural_image.dir = "data/vanhateren_iml"
+        bad_duration.training.bcm.duration_tau_e = 0.0
+        with self.assertRaisesRegex(ValueError, "training.bcm.duration_tau_e must be positive"):
+            validate_config(bad_duration)
+
+        bad_duration.training.bcm.duration_tau_e = -5.0
+        with self.assertRaisesRegex(ValueError, "training.bcm.duration_tau_e must be positive"):
+            validate_config(bad_duration)
+
 
 
 def _tiny_network_for_bcm() -> NetworkState:

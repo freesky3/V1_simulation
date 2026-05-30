@@ -494,6 +494,8 @@ class TrainingBCMConfig:
     rate_explosion_threshold: Optional[float] = 80.0
     saturation_fraction_threshold: float = 0.05
     max_consecutive_bad_batches: int = 5
+    duration_tau_e: float = 30.0
+
 
 @dataclass
 class TrainingConfig:

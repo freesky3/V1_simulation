@@ -361,6 +361,10 @@ def validate_config(cfg: RootConfig) -> None:
             raise ValueError(
                 f"training.bcm.max_consecutive_bad_batches must be positive, got {bcm.max_consecutive_bad_batches}"
             )
+        duration_tau_e = _finite_float(bcm.duration_tau_e, "training.bcm.duration_tau_e")
+        if duration_tau_e <= 0.0:
+            raise ValueError(f"training.bcm.duration_tau_e must be positive, got {bcm.duration_tau_e}")
+
 
     # 10. Sweep Config
     if getattr(cfg, 'sweep', None) is not None:
