@@ -45,6 +45,9 @@ class BatchTrainingLog:
     steady_state_reached: int
     steady_state_index: int
     steady_state_start_index: int
+    summary_start_index: int
+    summary_end_index: int
+    summary_window_size: int
     time_steps: int
     t_final: float
     skipped_bad_batch: bool = False
@@ -175,6 +178,10 @@ class BCMTrainer:
         aE_max = float(np.nanmax(dynamics.exc)) if dynamics.exc.size else 0.0
         aI_max = float(np.nanmax(dynamics.inh)) if dynamics.inh.size else 0.0
 
+        summary_start = _optional_index(getattr(dynamics, "summary_start_index", None))
+        summary_end = _optional_index(getattr(dynamics, "summary_end_index", None))
+        summary_w_size = int(summary_end - summary_start) if summary_start >= 0 and summary_end >= 0 else -1
+
         return BatchTrainingLog(
             step=self.state.step,
             epoch=int(epoch),
@@ -191,6 +198,9 @@ class BCMTrainer:
             steady_state_reached=int(dynamics.steady_state_reached),
             steady_state_index=_optional_index(dynamics.steady_state_index),
             steady_state_start_index=_optional_index(dynamics.steady_state_start_index),
+            summary_start_index=summary_start,
+            summary_end_index=summary_end,
+            summary_window_size=summary_w_size,
             time_steps=int(dynamics.time.size),
             t_final=float(dynamics.time[-1]),
             skipped_bad_batch=skipped,

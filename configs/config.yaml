@@ -1,4 +1,5 @@
 defaults:
+  - config_schema
   - analysis: default
   - background: none
   - model: default

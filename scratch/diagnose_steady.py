@@ -8,12 +8,16 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 from v1_simulation.cli import load_cli_config
-from v1_simulation.simulation.pipeline import V1SimulationPipeline
+from v1_simulation.network.builder import build_network_state
+from v1_simulation.training.natural_inputs import build_natural_image_l4_drive
+from v1_simulation.solvers.wilson_cowan import solve_wilson_cowan_batch
+from v1_simulation.simulation.pipeline import _make_simulation_background_trace, default_simulation_time_grid
 
 def diagnose():
     jax.config.update("jax_enable_x64", False)
     
     overrides = [
+        "+experiment=bcm_train",
         "solver=diffrax_tsit5",
         "background=none",
         "model.connectivity.j=1.2",
@@ -24,50 +28,74 @@ def diagnose():
     cfg = load_cli_config(config_path=None, config_name="config", overrides=overrides)
     cfg.mode = "train"
     cfg.training.enabled = True
+    if cfg.training.natural_image.dir is None:
+        cfg.training.natural_image.dir = str(cfg.paths.natural_image_dir)
     
-    print("Building pipeline...")
-    pipeline = V1SimulationPipeline(cfg)
-    pipeline.setup()
+    print("Building network...")
+    network = build_network_state(cfg)
+    time_grid = default_simulation_time_grid(cfg)
     
-    # We will manually get the vector field and evaluate it at the final state of a run.
-    # To do this easily, let's just run the solver and get the trajectory.
+    print("Building stimulus...")
+    natural_drive, natural_sampler = build_natural_image_l4_drive(
+        cfg=cfg.training.natural_image,
+        stimulus_cfg=cfg.stimulus,
+        model_cfg=cfg.model,
+        layers_cfg=cfg.model.layers,
+        l4_layer=network.layout.l4,
+        l4_tunings=network.layout.l4_tunings,
+        l4_pref_dirs=network.layout.l4_pref_dirs,
+    )
+    epoch_samples = list(natural_sampler.make_epoch(
+        limit=1,
+        shuffle_paths=True,
+        shuffle_samples=True,
+    ))
+    batch = tuple(epoch_samples[:2])
+    ext_drive = natural_drive.make_static_batch_func(batch)
     
+    bg_trace = _make_simulation_background_trace(
+        cfg,
+        network=network,
+        n_batch=2,
+        time=time_grid,
+    )
+    
+    cfg.solver.store_trajectory = True
     print("Running solver...")
-    # Get a batch from BCM data generator
-    batch = next(pipeline.bcm_trainer.data_generator)
+    result = solve_wilson_cowan_batch(
+        network=network,
+        external_drive=ext_drive,
+        time=time_grid,
+        n_batch=2,
+        solver_config=cfg.solver,
+        transfer_config=cfg.solver.transfer,
+        background_trace=bg_trace,
+        store_trajectory=True,
+    )
     
-    # The solver returns BatchODEResult
-    # But wait, diffrax_tsit5 returns only tail points by default. 
-    # Let's override to get the full trajectory.
-    pipeline.solver.options.store_trajectory = True
-    
-    result = pipeline.solver(batch)
-    
-    y_final_exc = result.exc_trajectory[-1] # shape (n_exc, batch)
-    y_final_inh = result.inh_trajectory[-1] # shape (n_inh, batch)
-    y_final = np.concatenate([y_final_exc, y_final_inh], axis=0) # shape (N, batch)
+    y_final_exc = result.exc_trajectory[-1] # shape (batch, n_exc)
+    y_final_inh = result.inh_trajectory[-1] # shape (batch, n_inh)
+    y_final = np.concatenate([y_final_exc, y_final_inh], axis=1) # shape (batch, N)
     
     print(f"Final state shape: {y_final.shape}")
+    print("exc_trajectory shape:", result.exc_trajectory.shape)
+    print("Last 5 time points in time_grid:", time_grid[-5:])
+    print("Change in exc_trajectory at the end of simulation:")
+    for i in range(1, min(6, len(time_grid))):
+        diff = np.max(np.abs(result.exc_trajectory[-i] - result.exc_trajectory[-i-1]))
+        print(f"  Step -{i} to -{i+1} max diff: {diff}")
     
-    # Let's compute dy/dt at the final state to see how small it actually is!
-    # We can just call pipeline.solver.rhs(t=3.0, y=y_final)
-    # The RHS is wrapped in the jax backend, but we can access it through the model.
-    # Actually, the model has `__call__(t, rates) -> drates/dt`
-    
-    # The V1Network __call__ expects state of shape (N, B)
-    t = 3.0
-    # Wait, the model might need external drive!
-    # Let's just use the JAX solver's internal vector field if possible, or model.__call__
-    # For a static input, external_drive(3.0) is the same as external_drive(0.0)
-    
-    dy = pipeline.model(t, y_final, external_drive=batch)
-    dy = np.asarray(dy)
+    # Actually we can just manually compute numerical derivative approximation for diagnostics
+    # since getting the true vector field from the outside is messy.
+    dy = (result.exc_trajectory[-1] - result.exc_trajectory[-2]) / (time_grid[-1] - time_grid[-2])
+    dy_inh = (result.inh_trajectory[-1] - result.inh_trajectory[-2]) / (time_grid[-1] - time_grid[-2])
+    dy = np.concatenate([dy, dy_inh], axis=1)
     
     f_norm_max = np.max(np.abs(dy))
     f_norm_rms = np.sqrt(np.mean(np.square(dy)))
     
     print("=======================================")
-    print(f"At end of simulation (t=3.0s):")
+    print(f"At end of simulation (t={time_grid[-1]:.4f}s):")
     print(f"Max derivative norm (L_inf): {f_norm_max}")
     print(f"RMS derivative norm (L_2): {f_norm_rms}")
     print(f"Max firing rate: {np.max(y_final)}")

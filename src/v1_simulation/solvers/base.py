@@ -202,6 +202,8 @@ class BatchODEResult:
     steady_state_reached: bool = False
     steady_state_index: int | None = None
     steady_state_start_index: int | None = None
+    summary_start_index: int | None = None
+    summary_end_index: int | None = None
 
 
 def validate_solver_options(options: SolverOptions) -> None:
@@ -355,10 +357,51 @@ def pack_trajectory_result(
 
     exc_t = np.transpose(y_t[:, layout.idx_exc, :], (0, 2, 1))
     inh_t = np.transpose(y_t[:, layout.idx_inh, :], (0, 2, 1))
-    start = summary_start_index(time.size, steady_state_start_index)
 
-    exc_tail = exc_t[start:]
-    inh_tail = inh_t[start:]
+    # Determine the exclusive end index of the valid trajectory.
+    # When early stopping succeeds, Diffrax pads the remaining saved time points
+    # with NaNs. In this code path, steady_state_index is expected to be the first
+    # padded/invalid index, so it is used as the exclusive end of the summary window.
+    if steady_state_reached and steady_state_index is not None:
+        end = int(steady_state_index)
+    else:
+        end = int(time.size)
+
+    if end <= 0:
+        raise ValueError(
+            f"Invalid steady-state end index (must be positive): end={end}, "
+            f"steady_state_reached={steady_state_reached}, "
+            f"steady_state_index={steady_state_index}"
+        )
+
+    start = summary_start_index(end, steady_state_start_index)
+
+    if start >= end:
+        raise ValueError(
+            f"Invalid steady-state summary window: start={start}, end={end}, "
+            f"steady_state_reached={steady_state_reached}, "
+            f"steady_state_index={steady_state_index}"
+        )
+
+    exc_tail = exc_t[start:end]
+    inh_tail = inh_t[start:end]
+
+    exc_tail_np = np.asarray(exc_tail)
+    inh_tail_np = np.asarray(inh_tail)
+
+    if exc_tail_np.size == 0 or inh_tail_np.size == 0:
+        raise ValueError(
+            f"Empty steady-state summary window: start={start}, end={end}, "
+            f"steady_state_reached={steady_state_reached}, "
+            f"steady_state_index={steady_state_index}"
+        )
+
+    if not np.all(np.isfinite(exc_tail_np)) or not np.all(np.isfinite(inh_tail_np)):
+        raise ValueError(
+            f"Non-finite values inside steady-state summary window: "
+            f"start={start}, end={end}, steady_state_index={steady_state_index}"
+        )
+
     exc = np.mean(exc_tail, axis=0)
     inh = np.mean(inh_tail, axis=0)
     exc_convergence = np.mean(np.std(exc_tail, axis=0), axis=1)
@@ -375,6 +418,8 @@ def pack_trajectory_result(
         steady_state_reached=steady_state_reached,
         steady_state_index=steady_state_index,
         steady_state_start_index=steady_state_start_index,
+        summary_start_index=start,
+        summary_end_index=end,
     )
 
 
@@ -410,6 +455,12 @@ def pack_summary_result(
     if mean.ndim != 2 or mean.shape[0] != layout.n_rates:
         raise ValueError("summary arrays must have shape (n_rates, n_batch).")
 
+    if steady_state_reached and steady_state_index is not None:
+        end = int(steady_state_index)
+    else:
+        end = int(time.size)
+    start = summary_start_index(end, steady_state_start_index)
+
     return BatchODEResult(
         exc=np.transpose(mean[layout.idx_exc, :]),
         inh=np.transpose(mean[layout.idx_inh, :]),
@@ -421,6 +472,8 @@ def pack_summary_result(
         steady_state_reached=steady_state_reached,
         steady_state_index=steady_state_index,
         steady_state_start_index=steady_state_start_index,
+        summary_start_index=start,
+        summary_end_index=end,
     )
 
 
