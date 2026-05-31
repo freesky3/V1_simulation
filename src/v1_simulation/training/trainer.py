@@ -158,26 +158,47 @@ class BCMTrainer:
                     f"The network may be in an unstable regime. "
                     f"Consider lowering model.connectivity.j or increasing g."
                 )
-            # Initialize theta on first step without updating weights
-            if self.state.theta is None:
-                from v1_simulation.training.bcm import initialize_theta
-                self.state.theta = initialize_theta(dynamics.exc, dynamics.inh, self.config)
             result_updated = 0
         else:
-            self.state.consecutive_bad_batches = 0
-            result = bcm_training_step(
-                network=self.state.network,
-                x_E=dynamics.exc,
-                y_E=dynamics.exc,
-                y_I=dynamics.inh,
-                theta=self.state.theta,
-                config=self.config,
-                row_sum_limits=self.row_sum_limits,
-                _cached_topology=self._cached_topology,
-            )
-            self.state.network = result.network
-            self.state.theta = result.theta
-            result_updated = int(result.updated)
+            try:
+                result = bcm_training_step(
+                    network=self.state.network,
+                    x_E=dynamics.exc,
+                    y_E=dynamics.exc,
+                    y_I=dynamics.inh,
+                    theta=self.state.theta,
+                    config=self.config,
+                    row_sum_limits=self.row_sum_limits,
+                    _cached_topology=self._cached_topology,
+                )
+                self.state.consecutive_bad_batches = 0
+                self.state.network = result.network
+                self.state.theta = result.theta
+                result_updated = int(result.updated)
+            except ValueError as e:
+                if "NaN" in str(e) or "infinite" in str(e):
+                    self.state.consecutive_bad_batches += 1
+                    logger.warning(
+                        "Late bad batch detected at step %d (epoch %d): %s. "
+                        "Skipping BCM update. Consecutive bad batches: %d/%d.",
+                        self.state.step,
+                        epoch,
+                        str(e),
+                        self.state.consecutive_bad_batches,
+                        self.config.max_consecutive_bad_batches,
+                    )
+                    max_consecutive = int(self.config.max_consecutive_bad_batches)
+                    if self.state.consecutive_bad_batches >= max_consecutive:
+                        raise RuntimeError(
+                            f"Training halted: {self.state.consecutive_bad_batches} consecutive "
+                            f"bad batches detected (limit: {max_consecutive}). "
+                            f"Last reason: {str(e)}. "
+                            f"The network may be in an unstable regime."
+                        )
+                    result_updated = 0
+                    skipped = True
+                else:
+                    raise
 
         aE_max = float(np.nanmax(dynamics.exc)) if dynamics.exc.size else 0.0
         aI_max = float(np.nanmax(dynamics.inh)) if dynamics.inh.size else 0.0

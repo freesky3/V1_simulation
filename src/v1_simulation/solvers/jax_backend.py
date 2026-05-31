@@ -362,6 +362,27 @@ def solve_diffrax(
     else:
         mu_ext = jnp.zeros((layout.n_rates, int(n_batch)), dtype=dtype)
 
+    ts_save_val = None
+    if options.store_trajectory:
+        ts_save_val = time
+    else:
+        if options.diagnostics_enabled:
+            t_probe = max(float(time[0]), float(time[-1]) - options.diagnostics_probe_dt)
+            idx = np.searchsorted(time, t_probe)
+            idx = min(idx, len(time) - 1)
+            t_probe_actual = float(time[idx])
+            
+            if options.steady_state_tail_points > 1:
+                ts_list = [t_probe_actual] + time[-options.steady_state_tail_points:].tolist()
+                ts_save_val = np.unique(ts_list)
+            else:
+                ts_save_val = np.array([t_probe_actual, float(time[-1])])
+        else:
+            if options.steady_state_tail_points > 1:
+                ts_save_val = time[-options.steady_state_tail_points:]
+            else:
+                ts_save_val = np.array([float(time[-1])])
+
     out = run(
         y0,
         W_exc,
@@ -371,6 +392,7 @@ def solve_diffrax(
         jnp.asarray(layout.idx_exc, dtype=jnp.int32),
         jnp.asarray(layout.idx_inh, dtype=jnp.int32),
         jnp.asarray(time, dtype=dtype),
+        jnp.asarray(ts_save_val, dtype=dtype),
         jnp.asarray(ax_t, dtype=dtype),
         jnp.asarray(bg_e, dtype=dtype),
         jnp.asarray(bg_i, dtype=dtype),
@@ -503,6 +525,7 @@ def _make_diffrax_diffeqsolve(
         idx_exc,
         idx_inh,
         time,
+        ts_save,
         ax_t,
         bg_e,
         bg_i,
@@ -559,32 +582,9 @@ def _make_diffrax_diffeqsolve(
         else:
             raise ValueError(f"Unsupported diffrax solver: {solver_name}")
         stepsize_controller = diffrax.ConstantStepSize()
-        import numpy as np
-        dt0 = float(time[1] - time[0])
+        dt0 = time[1] - time[0]
         
-        ts_save = None
-        if store_trajectory:
-            ts_save = time
-        else:
-            if diagnostics_enabled:
-                t_probe = max(float(time[0]), float(time[-1]) - diagnostics_probe_dt)
-                idx = np.searchsorted(time, t_probe)
-                idx = min(idx, len(time) - 1)
-                t_probe_actual = float(time[idx])
-                
-                if tail_points > 1:
-                    ts_list = [t_probe_actual] + time[-tail_points:].tolist()
-                    ts_save = np.unique(ts_list)
-                else:
-                    ts_save = np.array([t_probe_actual, float(time[-1])])
-            else:
-                if tail_points > 1:
-                    ts_save = time[-tail_points:]
-        
-        if ts_save is not None:
-            saveat = diffrax.SaveAt(ts=jnp.array(ts_save))
-        else:
-            saveat = diffrax.SaveAt(t1=True)
+        saveat = diffrax.SaveAt(ts=ts_save)
 
         if early_stop_enabled:
             def cond_fn(state_or_t, y=None, args_in=None, **kwargs):
@@ -643,17 +643,24 @@ def _make_diffrax_diffeqsolve(
             return y_all, ss_reached, ss_index, jnp.nan, jnp.nan, jnp.nan, jnp.nan
 
         # Extract y_final and y_probe
-        if ts_save is not None:
+        if diagnostics_enabled:
             y_tail = y_all[-tail_points:] if tail_points > 1 else y_all[[-1]]
             y_mean = jnp.mean(y_tail, axis=0)
             y_std = jnp.std(y_tail, axis=0)
             y_probe = y_all[0]
             y_final = y_tail[-1]
         else:
-            y_final = y_all[0]
-            y_mean = y_final
-            y_std = jnp.zeros_like(y_final)
-            y_probe = y_final
+            if tail_points > 1:
+                y_tail = y_all[-tail_points:]
+                y_mean = jnp.mean(y_tail, axis=0)
+                y_std = jnp.std(y_tail, axis=0)
+                y_final = y_tail[-1]
+                y_probe = y_final
+            else:
+                y_final = y_all[-1]
+                y_mean = y_final
+                y_std = jnp.zeros_like(y_final)
+                y_probe = y_final
 
         y_diff_max = jnp.nan
         y_diff_rms = jnp.nan
