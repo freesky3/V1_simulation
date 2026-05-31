@@ -140,8 +140,8 @@ def solve_jax_rk4(
         n_batch=n_batch,
         time=time,
     )
-    phi_exc_x, phi_exc_y = _transfer_table_arrays(rhs.phi_exc, "phi_exc")
-    phi_inh_x, phi_inh_y = _transfer_table_arrays(rhs.phi_inh, "phi_inh")
+    phi_exc_x, phi_exc_y, phi_exc_rate_max = _transfer_table_arrays(rhs.phi_exc, "phi_exc")
+    phi_inh_x, phi_inh_y, phi_inh_rate_max = _transfer_table_arrays(rhs.phi_inh, "phi_inh")
 
     dtype = jnp.float32 if options.jax_dtype == "float32" else jnp.float64
 
@@ -208,8 +208,10 @@ def solve_jax_rk4(
         jnp.asarray(bg_right_i, dtype=dtype),
         jnp.asarray(phi_exc_x, dtype=dtype),
         jnp.asarray(phi_exc_y, dtype=dtype),
+        jnp.asarray(phi_exc_rate_max, dtype=dtype),
         jnp.asarray(phi_inh_x, dtype=dtype),
         jnp.asarray(phi_inh_y, dtype=dtype),
+        jnp.asarray(phi_inh_rate_max, dtype=dtype),
         jnp.asarray(float(rhs.tau_exc), dtype=dtype),
         jnp.asarray(float(rhs.tau_inh), dtype=dtype),
     )
@@ -217,26 +219,32 @@ def solve_jax_rk4(
     if options.store_trajectory:
         y_all, ss_reached, ss_index = out
         jax.block_until_ready(y_all)
+        ss_reached_bool = bool(ss_reached)
+        ss_index_int = int(ss_index) if ss_reached_bool else None
+        ss_start_index = max(0, ss_index_int - options.early_stop_rk4_window) if ss_index_int is not None else None
         return pack_trajectory_result(
             np.asarray(y_all, dtype=np.float64),
             layout=layout,
             time=time,
             store_trajectory=True,
-            steady_state_reached=bool(ss_reached),
-            steady_state_index=int(ss_index) if ss_reached else None,
-            steady_state_start_index=int(ss_index) if ss_reached else None,
+            steady_state_reached=ss_reached_bool,
+            steady_state_index=ss_index_int,
+            steady_state_start_index=ss_start_index,
         )
 
     mean, std, ss_reached, ss_index = out
     jax.block_until_ready(mean)
+    ss_reached_bool = bool(ss_reached)
+    ss_index_int = int(ss_index) if ss_reached_bool else None
+    ss_start_index = max(0, ss_index_int - options.early_stop_rk4_window) if ss_index_int is not None else None
     return pack_summary_result(
         mean_rates=np.asarray(mean, dtype=np.float64),
         std_rates=np.asarray(std, dtype=np.float64),
         layout=layout,
         time=time,
-        steady_state_reached=bool(ss_reached),
-        steady_state_index=int(ss_index) if ss_reached else None,
-        steady_state_start_index=int(ss_index) if ss_reached else None,
+        steady_state_reached=ss_reached_bool,
+        steady_state_index=ss_index_int,
+        steady_state_start_index=ss_start_index,
     )
 
 
@@ -300,8 +308,8 @@ def solve_diffrax(
         time=time,
     )
 
-    phi_exc_x, phi_exc_y = _transfer_table_arrays(rhs.phi_exc, "phi_exc")
-    phi_inh_x, phi_inh_y = _transfer_table_arrays(rhs.phi_inh, "phi_inh")
+    phi_exc_x, phi_exc_y, phi_exc_rate_max = _transfer_table_arrays(rhs.phi_exc, "phi_exc")
+    phi_inh_x, phi_inh_y, phi_inh_rate_max = _transfer_table_arrays(rhs.phi_inh, "phi_inh")
 
     dtype = jnp.float32 if options.jax_dtype == "float32" else jnp.float64
 
@@ -398,8 +406,10 @@ def solve_diffrax(
         jnp.asarray(bg_i, dtype=dtype),
         jnp.asarray(phi_exc_x, dtype=dtype),
         jnp.asarray(phi_exc_y, dtype=dtype),
+        jnp.asarray(phi_exc_rate_max, dtype=dtype),
         jnp.asarray(phi_inh_x, dtype=dtype),
         jnp.asarray(phi_inh_y, dtype=dtype),
+        jnp.asarray(phi_inh_rate_max, dtype=dtype),
         jnp.asarray(float(rhs.tau_exc), dtype=dtype),
         jnp.asarray(float(rhs.tau_inh), dtype=dtype),
     )
@@ -408,14 +418,17 @@ def solve_diffrax(
     if options.store_trajectory:
         y_all, ss_reached, ss_index, y_diff_max, y_diff_rms, dy_max, dy_rms = out
         jax.block_until_ready(y_all)
+        ss_reached_bool = bool(ss_reached)
+        ss_index_int = int(ss_index) if ss_reached_bool else None
+        ss_start_index = max(0, ss_index_int - options.steady_state_tail_points) if ss_index_int is not None else None
         return pack_trajectory_result(
             np.asarray(y_all, dtype=np.float64),
             layout=layout,
             time=time,
             store_trajectory=True,
-            steady_state_reached=bool(ss_reached),
-            steady_state_index=int(ss_index) if ss_reached else None,
-            steady_state_start_index=int(ss_index) if ss_reached else None,
+            steady_state_reached=ss_reached_bool,
+            steady_state_index=ss_index_int,
+            steady_state_start_index=ss_start_index,
             y_diff_max=float(y_diff_max),
             y_diff_rms=float(y_diff_rms),
             dy_max=float(dy_max),
@@ -424,14 +437,17 @@ def solve_diffrax(
 
     mean, std, ss_reached, ss_index, y_diff_max, y_diff_rms, dy_max, dy_rms = out
     jax.block_until_ready(mean)
+    ss_reached_bool = bool(ss_reached)
+    ss_index_int = int(ss_index) if ss_reached_bool else None
+    ss_start_index = max(0, ss_index_int - options.steady_state_tail_points) if ss_index_int is not None else None
     return pack_summary_result(
         mean_rates=np.asarray(mean, dtype=np.float64),
         std_rates=np.asarray(std, dtype=np.float64),
         layout=layout,
         time=time,
-        steady_state_reached=bool(ss_reached),
-        steady_state_index=int(ss_index) if ss_reached else None,
-        steady_state_start_index=int(ss_index) if ss_reached else None,
+        steady_state_reached=ss_reached_bool,
+        steady_state_index=ss_index_int,
+        steady_state_start_index=ss_start_index,
         y_diff_max=float(y_diff_max),
         y_diff_rms=float(y_diff_rms),
         dy_max=float(dy_max),
@@ -475,12 +491,13 @@ def _make_diffrax_diffeqsolve(
     Returns:
         A JIT-compiled callable `run` that executes the ODE integration.
     """
-    def interp_phi(x, xp, fp):
-        return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
+    def interp_phi(x, xp, fp, rate_max):
+        out = jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
+        return jnp.where(jnp.isfinite(rate_max), jnp.clip(out, 0.0, rate_max), out)
 
     if is_static:
         def vector_field(t, y, args):
-            W_exc, W_inh, mu_ext, bg_e_interp, bg_i_interp, phi_exc_x, phi_exc_y, phi_inh_x, phi_inh_y, tau_exc, tau_inh, idx_exc, idx_inh = args
+            W_exc, W_inh, mu_ext, bg_e_interp, bg_i_interp, phi_exc_x, phi_exc_y, phi_exc_rate_max, phi_inh_x, phi_inh_y, phi_inh_rate_max, tau_exc, tau_inh, idx_exc, idx_inh = args
             curr_bg_e = bg_e_interp.evaluate(t)
             curr_bg_i = bg_i_interp.evaluate(t)
 
@@ -488,17 +505,17 @@ def _make_diffrax_diffeqsolve(
 
             dy = jnp.zeros_like(y)
             dy = dy.at[idx_exc, :].set(
-                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y))
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y, phi_exc_rate_max))
                 / tau_exc
             )
             dy = dy.at[idx_inh, :].set(
-                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y))
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y, phi_inh_rate_max))
                 / tau_inh
             )
             return dy
     else:
         def vector_field(t, y, args):
-            W_exc, W_inh, W_ext, ax_interp, bg_e_interp, bg_i_interp, phi_exc_x, phi_exc_y, phi_inh_x, phi_inh_y, tau_exc, tau_inh, idx_exc, idx_inh = args
+            W_exc, W_inh, W_ext, ax_interp, bg_e_interp, bg_i_interp, phi_exc_x, phi_exc_y, phi_exc_rate_max, phi_inh_x, phi_inh_y, phi_inh_rate_max, tau_exc, tau_inh, idx_exc, idx_inh = args
             ax = ax_interp.evaluate(t)
             curr_bg_e = bg_e_interp.evaluate(t)
             curr_bg_i = bg_i_interp.evaluate(t)
@@ -507,11 +524,11 @@ def _make_diffrax_diffeqsolve(
 
             dy = jnp.zeros_like(y)
             dy = dy.at[idx_exc, :].set(
-                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y))
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + curr_bg_e, phi_exc_x, phi_exc_y, phi_exc_rate_max))
                 / tau_exc
             )
             dy = dy.at[idx_inh, :].set(
-                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y))
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + curr_bg_i, phi_inh_x, phi_inh_y, phi_inh_rate_max))
                 / tau_inh
             )
             return dy
@@ -531,8 +548,10 @@ def _make_diffrax_diffeqsolve(
         bg_i,
         phi_exc_x,
         phi_exc_y,
+        phi_exc_rate_max,
         phi_inh_x,
         phi_inh_y,
+        phi_inh_rate_max,
         tau_exc,
         tau_inh,
     ):
@@ -548,8 +567,10 @@ def _make_diffrax_diffeqsolve(
                 bg_i_interp,
                 phi_exc_x,
                 phi_exc_y,
+                phi_exc_rate_max,
                 phi_inh_x,
                 phi_inh_y,
+                phi_inh_rate_max,
                 tau_exc,
                 tau_inh,
                 idx_exc,
@@ -566,8 +587,10 @@ def _make_diffrax_diffeqsolve(
                 bg_i_interp,
                 phi_exc_x,
                 phi_exc_y,
+                phi_exc_rate_max,
                 phi_inh_x,
                 phi_inh_y,
+                phi_inh_rate_max,
                 tau_exc,
                 tau_inh,
                 idx_exc,
@@ -584,7 +607,7 @@ def _make_diffrax_diffeqsolve(
         stepsize_controller = diffrax.ConstantStepSize()
         dt0 = time[1] - time[0]
         
-        saveat = diffrax.SaveAt(ts=ts_save)
+        saveat = diffrax.SaveAt(ts=ts_save) if store_trajectory else diffrax.SaveAt(ts=ts_save, t1=True)
 
         if early_stop_enabled:
             def cond_fn(state_or_t, y=None, args_in=None, **kwargs):
@@ -642,25 +665,31 @@ def _make_diffrax_diffeqsolve(
         if store_trajectory:
             return y_all, ss_reached, ss_index, jnp.nan, jnp.nan, jnp.nan, jnp.nan
 
-        # Extract y_final and y_probe
-        if diagnostics_enabled:
-            y_tail = y_all[-tail_points:] if tail_points > 1 else y_all[[-1]]
-            y_mean = jnp.mean(y_tail, axis=0)
-            y_std = jnp.std(y_tail, axis=0)
-            y_probe = y_all[0]
-            y_final = y_tail[-1]
-        else:
-            if tail_points > 1:
-                y_tail = y_all[-tail_points:]
-                y_mean = jnp.mean(y_tail, axis=0)
-                y_std = jnp.std(y_tail, axis=0)
-                y_final = y_tail[-1]
-                y_probe = y_final
-            else:
-                y_final = y_all[-1]
-                y_mean = y_final
-                y_std = jnp.zeros_like(y_final)
-                y_probe = y_final
+        finite_rows = jnp.all(jnp.isfinite(y_all), axis=(1, 2))
+        finite_rank = jnp.cumsum(finite_rows.astype(jnp.int32))
+        finite_count = finite_rank[-1]
+        has_finite = finite_count > 0
+        summary_start_rank = jnp.maximum(jnp.int32(1), finite_count - jnp.asarray(tail_points, dtype=jnp.int32) + 1)
+        summary_mask = jnp.logical_and(finite_rows, finite_rank >= summary_start_rank)
+        summary_mask_3d = summary_mask[:, jnp.newaxis, jnp.newaxis]
+        summary_count = jnp.maximum(jnp.sum(summary_mask.astype(y_all.dtype)), jnp.asarray(1, dtype=y_all.dtype))
+        y_sum = jnp.sum(jnp.where(summary_mask_3d, y_all, jnp.zeros_like(y_all)), axis=0)
+        y_mean_masked = y_sum / summary_count
+        centered = jnp.where(summary_mask_3d, y_all - y_mean_masked, jnp.zeros_like(y_all))
+        y_std_masked = jnp.sqrt(jnp.sum(jnp.square(centered), axis=0) / summary_count)
+
+        final_mask = jnp.logical_and(finite_rows, finite_rank == finite_count)
+        final_mask_3d = final_mask[:, jnp.newaxis, jnp.newaxis]
+        y_final_masked = jnp.sum(jnp.where(final_mask_3d, y_all, jnp.zeros_like(y_all)), axis=0)
+
+        probe_mask = jnp.logical_and(finite_rows, finite_rank == 1)
+        probe_mask_3d = probe_mask[:, jnp.newaxis, jnp.newaxis]
+        y_probe_masked = jnp.sum(jnp.where(probe_mask_3d, y_all, jnp.zeros_like(y_all)), axis=0)
+
+        y_mean = jnp.where(has_finite, y_mean_masked, y_all[-1])
+        y_std = jnp.where(has_finite, y_std_masked, jnp.full_like(y_mean_masked, jnp.nan))
+        y_final = jnp.where(has_finite, y_final_masked, y_all[-1])
+        y_probe = jnp.where(has_finite, y_probe_masked, y_all[0])
 
         y_diff_max = jnp.nan
         y_diff_rms = jnp.nan
@@ -770,8 +799,9 @@ def _make_jax_rk4(
     Returns:
         A JIT-compiled callable `run`.
     """
-    def interp_phi(x, xp, fp):
-        return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
+    def interp_phi(x, xp, fp, rate_max):
+        out = jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
+        return jnp.where(jnp.isfinite(rate_max), jnp.clip(out, 0.0, rate_max), out)
 
     if is_static:
         def wc_rhs(
@@ -786,8 +816,10 @@ def _make_jax_rk4(
             idx_inh,
             phi_exc_x,
             phi_exc_y,
+            phi_exc_rate_max,
             phi_inh_x,
             phi_inh_y,
+            phi_inh_rate_max,
             tau_exc,
             tau_inh,
             mu_ext,
@@ -795,11 +827,11 @@ def _make_jax_rk4(
             mu = W_exc @ y[idx_exc, :] + W_inh @ y[idx_inh, :] + mu_ext
             dy = jnp.zeros_like(y)
             dy = dy.at[idx_exc, :].set(
-                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + bg_e, phi_exc_x, phi_exc_y))
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + bg_e, phi_exc_x, phi_exc_y, phi_exc_rate_max))
                 / tau_exc
             )
             dy = dy.at[idx_inh, :].set(
-                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + bg_i, phi_inh_x, phi_inh_y))
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + bg_i, phi_inh_x, phi_inh_y, phi_inh_rate_max))
                 / tau_inh
             )
             return dy
@@ -816,8 +848,10 @@ def _make_jax_rk4(
             idx_inh,
             phi_exc_x,
             phi_exc_y,
+            phi_exc_rate_max,
             phi_inh_x,
             phi_inh_y,
+            phi_inh_rate_max,
             tau_exc,
             tau_inh,
             mu_ext,
@@ -825,11 +859,11 @@ def _make_jax_rk4(
             mu = W_exc @ y[idx_exc, :] + W_inh @ y[idx_inh, :] + W_ext @ ax
             dy = jnp.zeros_like(y)
             dy = dy.at[idx_exc, :].set(
-                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + bg_e, phi_exc_x, phi_exc_y))
+                (-y[idx_exc, :] + interp_phi(tau_exc * mu[idx_exc, :] + bg_e, phi_exc_x, phi_exc_y, phi_exc_rate_max))
                 / tau_exc
             )
             dy = dy.at[idx_inh, :].set(
-                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + bg_i, phi_inh_x, phi_inh_y))
+                (-y[idx_inh, :] + interp_phi(tau_inh * mu[idx_inh, :] + bg_i, phi_inh_x, phi_inh_y, phi_inh_rate_max))
                 / tau_inh
             )
             return dy
@@ -854,8 +888,10 @@ def _make_jax_rk4(
         bg_right_i,
         phi_exc_x,
         phi_exc_y,
+        phi_exc_rate_max,
         phi_inh_x,
         phi_inh_y,
+        phi_inh_rate_max,
         tau_exc,
         tau_inh,
     ):
@@ -867,8 +903,10 @@ def _make_jax_rk4(
             idx_inh,
             phi_exc_x,
             phi_exc_y,
+            phi_exc_rate_max,
             phi_inh_x,
             phi_inh_y,
+            phi_inh_rate_max,
             tau_exc,
             tau_inh,
             mu_ext,
@@ -1034,14 +1072,19 @@ def _precompute_rk4_background(
     )
 
 
-def _transfer_table_arrays(phi, name: str) -> tuple[FloatArray, FloatArray]:
+def _transfer_table_arrays(phi, name: str) -> tuple[FloatArray, FloatArray, float]:
     if hasattr(phi, "as_arrays"):
         x, y = phi.as_arrays()
     elif hasattr(phi, "mu") and hasattr(phi, "rate"):
         x, y = phi.mu, phi.rate
     else:
         raise ValueError(f"{name} must be a TransferTable-like object for jax-rk4.")
-    return np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+    rate_max = getattr(phi, "rate_max", None)
+    return (
+        np.asarray(x, dtype=np.float64),
+        np.asarray(y, dtype=np.float64),
+        float(rate_max) if rate_max is not None else float("inf"),
+    )
 
 
 def _prepare_jax_matrix(matrix, jnp, *, prefer_sparse: bool, dense_max_mb: float, dtype=None):

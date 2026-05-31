@@ -186,8 +186,8 @@ class SolverOptimizationTests(unittest.TestCase):
             n_batch=self.n_batch,
             time=self.time,
         )
-        phi_exc_x, phi_exc_y = _transfer_table_arrays(self.phi_table, "phi_exc")
-        phi_inh_x, phi_inh_y = _transfer_table_arrays(self.phi_table, "phi_inh")
+        phi_exc_x, phi_exc_y, phi_exc_rate_max = _transfer_table_arrays(self.phi_table, "phi_exc")
+        phi_inh_x, phi_inh_y, phi_inh_rate_max = _transfer_table_arrays(self.phi_table, "phi_inh")
 
         # Static precomputed mu_ext
         mu_ext_static = W_ext @ jnp.asarray(ax_left[0])
@@ -212,8 +212,10 @@ class SolverOptimizationTests(unittest.TestCase):
             bg_right_i=jnp.asarray(bg_right_i),
             phi_exc_x=jnp.asarray(phi_exc_x),
             phi_exc_y=jnp.asarray(phi_exc_y),
+            phi_exc_rate_max=jnp.asarray(phi_exc_rate_max),
             phi_inh_x=jnp.asarray(phi_inh_x),
             phi_inh_y=jnp.asarray(phi_inh_y),
+            phi_inh_rate_max=jnp.asarray(phi_inh_rate_max),
             tau_exc=jnp.asarray(0.02),
             tau_inh=jnp.asarray(0.01),
         )
@@ -226,8 +228,8 @@ class SolverOptimizationTests(unittest.TestCase):
                 common_args["ax_left"], common_args["ax_mid"], common_args["ax_right"],
                 common_args["bg_left_e"], common_args["bg_mid_e"], common_args["bg_right_e"],
                 common_args["bg_left_i"], common_args["bg_mid_i"], common_args["bg_right_i"],
-                common_args["phi_exc_x"], common_args["phi_exc_y"],
-                common_args["phi_inh_x"], common_args["phi_inh_y"],
+                common_args["phi_exc_x"], common_args["phi_exc_y"], common_args["phi_exc_rate_max"],
+                common_args["phi_inh_x"], common_args["phi_inh_y"], common_args["phi_inh_rate_max"],
                 common_args["tau_exc"], common_args["tau_inh"],
             )
             return jnp.sum(out[0])
@@ -240,8 +242,8 @@ class SolverOptimizationTests(unittest.TestCase):
                 common_args["ax_left"], common_args["ax_mid"], common_args["ax_right"],
                 common_args["bg_left_e"], common_args["bg_mid_e"], common_args["bg_right_e"],
                 common_args["bg_left_i"], common_args["bg_mid_i"], common_args["bg_right_i"],
-                common_args["phi_exc_x"], common_args["phi_exc_y"],
-                common_args["phi_inh_x"], common_args["phi_inh_y"],
+                common_args["phi_exc_x"], common_args["phi_exc_y"], common_args["phi_exc_rate_max"],
+                common_args["phi_inh_x"], common_args["phi_inh_y"], common_args["phi_inh_rate_max"],
                 common_args["tau_exc"], common_args["tau_inh"],
             )
             return jnp.sum(out[0])
@@ -288,6 +290,64 @@ class SolverOptimizationTests(unittest.TestCase):
         )
 
         np.testing.assert_allclose(mu_opt, mu_ref, rtol=1e-12, atol=1e-14)
+
+    def test_transfer_table_arrays_preserve_rate_cap(self) -> None:
+        table = TransferTable(
+            np.array([0.0, 1.0, 2.0]),
+            np.array([0.0, 10.0, 20.0]),
+            rate_max=7.5,
+        )
+
+        x, y, rate_max = _transfer_table_arrays(table, "phi_exc")
+
+        np.testing.assert_allclose(x, table.mu)
+        np.testing.assert_allclose(y, table.rate)
+        self.assertEqual(rate_max, 7.5)
+
+    def test_jax_rk4_respects_transfer_table_rate_cap(self) -> None:
+        capped_phi = TransferTable(
+            np.linspace(-100.0, 100.0, 1000),
+            np.full(1000, 50.0),
+            rate_max=3.0,
+        )
+
+        result = solve_wilson_cowan_batch(
+            network=self.network,
+            external_drive=lambda _t: np.array([[100.0, 100.0]]),
+            time=np.linspace(0.0, 0.2, 20),
+            n_batch=self.n_batch,
+            solver_config=_dense_solver_config(),
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=capped_phi,
+            phi_inh=capped_phi,
+        )
+
+        self.assertLessEqual(float(np.max(result.exc)), 3.0 + 1e-6)
+        self.assertLessEqual(float(np.max(result.inh)), 3.0 + 1e-6)
+
+    def test_diffrax_respects_transfer_table_rate_cap(self) -> None:
+        if not is_diffrax_available():
+            self.skipTest("Diffrax not installed")
+
+        capped_phi = TransferTable(
+            np.linspace(-100.0, 100.0, 1000),
+            np.full(1000, 50.0),
+            rate_max=3.0,
+        )
+
+        result = solve_wilson_cowan_batch(
+            network=self.network,
+            external_drive=lambda _t: np.array([[100.0, 100.0]]),
+            time=np.linspace(0.0, 0.2, 20),
+            n_batch=self.n_batch,
+            solver_config=_dense_diffrax_config(),
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=capped_phi,
+            phi_inh=capped_phi,
+        )
+
+        self.assertLessEqual(float(np.max(result.exc)), 3.0 + 1e-6)
+        self.assertLessEqual(float(np.max(result.inh)), 3.0 + 1e-6)
 
 
 if __name__ == "__main__":
