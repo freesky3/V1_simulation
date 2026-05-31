@@ -2,6 +2,7 @@
 
 backend: scipy
 method: RK45
+
 early_stop:
   enabled: false
   min_time: 0.2
@@ -17,3 +18,7 @@ diagnostics:
   probe_dt: 1.0
   eval_dy_at: mean
   variables: exc
+  trajectory_sample_points: 2000
+  convergence_window_s: 1.0
+  dy_dt_threshold: 1.0
+  peak_to_peak_threshold: 0.05

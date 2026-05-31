@@ -46,4 +46,4 @@ training:
     saturation_fraction_threshold: 0.05
     max_consecutive_bad_batches: 5
     duration_tau_e: 30.0
-
+    dt_tau_i_fraction: 0.3333333333333333

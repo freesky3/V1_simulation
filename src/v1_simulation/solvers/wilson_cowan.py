@@ -237,7 +237,7 @@ def solve_wilson_cowan_batch(
         return solve_scipy(rhs, external_drive, layout, n_batch, time_grid, run_options)
 
     if run_options.backend == "jax-rk4":
-        from v1_simulation.solvers.jax_backend import solve_jax_rk4
+        from v1_simulation.solvers.jax_rk4_backend import solve_jax_rk4
 
         return solve_jax_rk4(
             rhs=rhs,
@@ -249,7 +249,7 @@ def solve_wilson_cowan_batch(
         )
 
     if run_options.backend == "diffrax":
-        from v1_simulation.solvers.jax_backend import solve_diffrax
+        from v1_simulation.solvers.diffrax_backend import solve_diffrax
 
         return solve_diffrax(
             rhs=rhs,

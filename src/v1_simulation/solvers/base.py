@@ -105,12 +105,18 @@ class SolverOptions:
     jax_prefer_sparse: bool = True
     jax_dense_max_mb: float = 128.0
     diffrax_solver: str = "tsit5"
+    diffrax_max_steps: int = 4096
+    diffrax_initial_dt_tau_min_fraction: float = 0.1
     jax_dtype: str = "float64"
     steady_state_tail_points: int = 1
     diagnostics_enabled: bool = True
     diagnostics_probe_dt: float = 1.0
     diagnostics_eval_dy_at: str = "mean"
     diagnostics_variables: str = "exc"
+    diagnostics_trajectory_sample_points: int = 2000
+    diagnostics_convergence_window_s: float = 1.0
+    diagnostics_dy_dt_threshold: float = 1.0
+    diagnostics_peak_to_peak_threshold: float = 0.05
 
     @classmethod
     def from_config(
@@ -172,12 +178,18 @@ class SolverOptions:
             jax_prefer_sparse=True if jax_cfg is None else bool(jax_cfg.prefer_sparse),
             jax_dense_max_mb=128.0 if jax_cfg is None else float(jax_cfg.dense_max_mb),
             diffrax_solver="tsit5" if diffrax_cfg is None else str(diffrax_cfg.solver),
+            diffrax_max_steps=4096 if diffrax_cfg is None else int(diffrax_cfg.max_steps),
+            diffrax_initial_dt_tau_min_fraction=0.1 if diffrax_cfg is None else float(diffrax_cfg.initial_dt_tau_min_fraction),
             jax_dtype="float64" if jax_cfg is None else getattr(jax_cfg, "dtype", "float64"),
             steady_state_tail_points=1 if diffrax_cfg is None else getattr(diffrax_cfg, "steady_state_tail_points", 1),
-            diagnostics_enabled=getattr(solver, "diagnostics", None) is not None and bool(solver.diagnostics.enabled),
-            diagnostics_probe_dt=float(solver.diagnostics.probe_dt) if getattr(solver, "diagnostics", None) is not None else 1.0,
-            diagnostics_eval_dy_at=str(solver.diagnostics.eval_dy_at) if getattr(solver, "diagnostics", None) is not None else "mean",
-            diagnostics_variables=str(solver.diagnostics.variables) if getattr(solver, "diagnostics", None) is not None else "exc",
+            diagnostics_enabled=bool(solver.diagnostics.enabled),
+            diagnostics_probe_dt=float(solver.diagnostics.probe_dt),
+            diagnostics_eval_dy_at=str(solver.diagnostics.eval_dy_at),
+            diagnostics_variables=str(solver.diagnostics.variables),
+            diagnostics_trajectory_sample_points=int(solver.diagnostics.trajectory_sample_points),
+            diagnostics_convergence_window_s=float(solver.diagnostics.convergence_window_s),
+            diagnostics_dy_dt_threshold=float(solver.diagnostics.dy_dt_threshold),
+            diagnostics_peak_to_peak_threshold=float(solver.diagnostics.peak_to_peak_threshold),
         )
 
 @dataclass(frozen=True, slots=True)

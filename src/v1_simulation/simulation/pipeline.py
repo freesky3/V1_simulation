@@ -361,7 +361,7 @@ def default_training_time_grid(cfg: RootConfig) -> np.ndarray:
     # Use configurable duration_tau_e (defaults to 30 * tau_e) to reach stable limit cycles.
     stop = float(cfg.training.bcm.duration_tau_e) * float(transfer.tau_e)
 
-    step = float(transfer.tau_i) / 3.0
+    step = float(cfg.training.bcm.dt_tau_i_fraction) * float(transfer.tau_i)
     return validate_time_grid(np.arange(0.0, stop, step, dtype=float), copy=False)
 
 

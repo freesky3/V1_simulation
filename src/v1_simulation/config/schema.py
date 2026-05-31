@@ -411,6 +411,8 @@ class JaxSolverConfig:
 class DiffraxSolverConfig:
     solver: str = "tsit5"
     steady_state_tail_points: int = 1
+    max_steps: int = 4096
+    initial_dt_tau_min_fraction: float = 0.1
 
 @dataclass
 class EarlyStopConfig:
@@ -429,6 +431,10 @@ class SolverDiagnosticsConfig:
     probe_dt: float = 1.0
     eval_dy_at: str = "mean"  # "mean" or "final"
     variables: str = "exc"    # "exc" or "all"
+    trajectory_sample_points: int = 2000
+    convergence_window_s: float = 1.0
+    dy_dt_threshold: float = 1.0
+    peak_to_peak_threshold: float = 0.05
 
 @dataclass
 class SolverConfig:
@@ -503,6 +509,7 @@ class TrainingBCMConfig:
     saturation_fraction_threshold: float = 0.05
     max_consecutive_bad_batches: int = 5
     duration_tau_e: float = 30.0
+    dt_tau_i_fraction: float = 1.0 / 3.0
 
 
 @dataclass

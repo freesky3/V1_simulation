@@ -24,9 +24,8 @@ import numpy as np
 
 # Check if JAX and Diffrax are available
 try:
-    import diffrax
-    import jax
-    import jax.numpy as jnp
+    import diffrax  # noqa: F401
+    import jax  # noqa: F401
 except ImportError:
     print("Error: This script requires JAX and Diffrax to be installed.", file=sys.stderr)
     print("Please run it in an environment with GPU/JAX/Diffrax support.", file=sys.stderr)
@@ -39,8 +38,13 @@ def main():
     from v1_simulation.data.natural_images import apply_crop
     from v1_simulation.network.builder import build_network_state
     from v1_simulation.solvers.base import NetworkLayout
-    from v1_simulation.solvers.jax_backend import _slice_weight_blocks, _transfer_table_arrays
-    from v1_simulation.solvers.wilson_cowan import _resolve_transfer_functions, WilsonCowanRHS
+    from v1_simulation.solvers.fixed_patch import (
+        build_fixed_patch_time_grid,
+        evaluate_dy_dt_trajectory,
+        evaluate_fixed_patch_convergence,
+        solve_static_fixed_patch_diffrax,
+    )
+    from v1_simulation.solvers.wilson_cowan import _resolve_transfer_functions
     from v1_simulation.training.natural_inputs import build_natural_image_l4_drive
 
     # ---- 1. Load Config & Apply Overrides ----
@@ -157,26 +161,19 @@ def main():
     
     # Confirm the drive is time-independent
     rate_at_0 = drive_func(0.0)
-    rate_at_100 = drive_func(100.0)
-    assert np.allclose(rate_at_0, rate_at_100), "Error: Drive is not time-independent!"
+    rate_at_later = drive_func(float(cfg.simulation.duration_tau_e) * float(cfg.solver.transfer.tau_e))
+    assert np.allclose(rate_at_0, rate_at_later), "Error: Drive is not time-independent!"
     print("Confirmed L4 drive is time-independent.")
 
-    # ---- 4. Set Up Time Grid & JAX Variables ----
-    t0 = 0.0
-    t1 = float(cfg.simulation.t_stop) if (hasattr(cfg, "simulation") and cfg.simulation.t_stop is not None) else 100.0
+    # ---- 4. Set Up Time Grid & Transfer Functions ----
+    time_grid = build_fixed_patch_time_grid(cfg)
+    t0 = time_grid.t0
+    t1 = time_grid.t1
+    save_ts = time_grid.save_ts
+    n_save = save_ts.size
     tau_e = float(cfg.solver.transfer.tau_e)
     tau_i = float(cfg.solver.transfer.tau_i)
-    dt0 = min(tau_e, tau_i) / 10.0
     
-    # Define saving points (e.g., 2000 saving points)
-    n_save = 2000
-    save_ts = np.linspace(t0, t1, n_save, dtype=np.float64)
-
-    # Convert to JAX arrays
-    j_save_ts = jnp.asarray(save_ts)
-    j_idx_exc = jnp.asarray(layout.idx_exc, dtype=jnp.int32)
-    j_idx_inh = jnp.asarray(layout.idx_inh, dtype=jnp.int32)
-
     # Retrieve transfer functions
     phi_exc, phi_inh = _resolve_transfer_functions(
         transfer_config=cfg.solver.transfer,
@@ -184,185 +181,49 @@ def main():
         phi_exc=None,
         phi_inh=None,
     )
-    phi_exc_x, phi_exc_y = _transfer_table_arrays(phi_exc, "phi_exc")
-    phi_inh_x, phi_inh_y = _transfer_table_arrays(phi_inh, "phi_inh")
-
-    # Configure JAX dtype
-    jax_dtype = jnp.float32 if cfg.solver.jax.dtype == "float32" else jnp.float64
-    
-    # Pre-slice weight blocks using the helper from codebase
-    W_exc, W_inh, W_ext = _slice_weight_blocks(
-        network.weights,
-        layout.idx_exc,
-        layout.idx_inh,
-        layout.idx_ext,
-        jnp,
-        prefer_sparse=bool(cfg.solver.jax.prefer_sparse),
-        dense_max_mb=float(cfg.solver.jax.dense_max_mb),
-        dtype=jax_dtype,
-    )
-
-    # Initial state (firing rates at 0 Hz)
-    y0 = jnp.zeros((layout.n_rates, 1), dtype=jax_dtype)
-
-    # Calculate static L4 external contribution
-    ax_0 = jnp.asarray(input_rates[:, np.newaxis], dtype=jax_dtype)
-    mu_ext = W_ext @ ax_0
-
-    # Retrieve tolerances
-    rtol = float(cfg.training.bcm.steady_state_rel_tol) if hasattr(cfg.training.bcm, "steady_state_rel_tol") else 1e-5
-    atol = float(cfg.training.bcm.steady_state_abs_tol) if hasattr(cfg.training.bcm, "steady_state_abs_tol") else 1e-3
 
     # ---- 5. JAX-JIT Diffrax Integration ----
-    print("Compiling and running custom Diffrax Tsit5 solver (adaptive step size)...")
-    
-    def interp_phi(x, xp, fp):
-        return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
-
-    def vector_field(t, y, args):
-        W_exc_a, W_inh_a, mu_ext_a, phi_exc_x_a, phi_exc_y_a, phi_inh_x_a, phi_inh_y_a, tau_e_a, tau_i_a, idx_exc_a, idx_inh_a = args
-
-        mu = W_exc_a @ y[idx_exc_a, :] + W_inh_a @ y[idx_inh_a, :] + mu_ext_a
-        
-        dy = jnp.zeros_like(y)
-        dy = dy.at[idx_exc_a, :].set(
-            (-y[idx_exc_a, :] + interp_phi(tau_e_a * mu[idx_exc_a, :], phi_exc_x_a, phi_exc_y_a))
-            / tau_e_a
-        )
-        dy = dy.at[idx_inh_a, :].set(
-            (-y[idx_inh_a, :] + interp_phi(tau_i_a * mu[idx_inh_a, :], phi_inh_x_a, phi_inh_y_a))
-            / tau_i_a
-        )
-        return dy
-
-    @jax.jit
-    def run_integration(
-        y0_val, W_exc_val, W_inh_val, mu_ext_val, 
-        phi_exc_x_val, phi_exc_y_val, phi_inh_x_val, phi_inh_y_val,
-        tau_e_val, tau_i_val, idx_exc_val, idx_inh_val, save_ts_val
-    ):
-        term = diffrax.ODETerm(vector_field)
-        
-        solver_name = str(cfg.solver.diffrax.solver).lower()
-        if solver_name == "tsit5":
-            solver = diffrax.Tsit5()
-        elif solver_name == "heun":
-            solver = diffrax.Heun()
-        elif solver_name == "kvaerno5":
-            solver = diffrax.Kvaerno5()
-        elif solver_name == "kvaerno3":
-            solver = diffrax.Kvaerno3()
-        else:
-            raise ValueError(f"Unsupported diffrax solver: {solver_name}")
-            
-        stepsize_controller = diffrax.PIDController(rtol=rtol, atol=atol)
-        saveat = diffrax.SaveAt(ts=save_ts_val)
-
-        args = (
-            W_exc_val,
-            W_inh_val,
-            mu_ext_val,
-            phi_exc_x_val,
-            phi_exc_y_val,
-            phi_inh_x_val,
-            phi_inh_y_val,
-            tau_e_val,
-            tau_i_val,
-            idx_exc_val,
-            idx_inh_val,
-        )
-
-        sol = diffrax.diffeqsolve(
-            term,
-            solver,
-            t0=t0,
-            t1=t1,
-            dt0=dt0,
-            y0=y0_val,
-            args=args,
-            saveat=saveat,
-            stepsize_controller=stepsize_controller,
-            max_steps=1000000,
-        )
-        return sol.ys, sol.result, sol.stats["num_steps"]
-
-    # Execute simulation
-    ys, sol_result, num_steps_jax = run_integration(
-        y0, W_exc, W_inh, mu_ext,
-        jnp.asarray(phi_exc_x, dtype=jax_dtype),
-        jnp.asarray(phi_exc_y, dtype=jax_dtype),
-        jnp.asarray(phi_inh_x, dtype=jax_dtype),
-        jnp.asarray(phi_inh_y, dtype=jax_dtype),
-        jnp.asarray(tau_e, dtype=jax_dtype),
-        jnp.asarray(tau_i, dtype=jax_dtype),
-        j_idx_exc,
-        j_idx_inh,
-        j_save_ts
+    print(f"Compiling and running Diffrax {cfg.solver.diffrax.solver} solver (adaptive step size)...")
+    trajectory = solve_static_fixed_patch_diffrax(
+        cfg=cfg,
+        network=network,
+        layout=layout,
+        input_rates=input_rates,
+        phi_exc=phi_exc,
+        phi_inh=phi_inh,
+        time_grid=time_grid,
     )
+    status = trajectory.status
+    num_steps = status.num_steps
     
-    # Block until JAX finishes
-    ys = np.asarray(ys)
-    
-    # Check success using diffrax enum comparison
-    is_successful = False
-    try:
-        # Compare directly with diffrax.RESULTS enum
-        is_successful = bool(np.asarray(sol_result == diffrax.RESULTS.successful))
-        sol_result_val = 0 if is_successful else -1
-    except Exception:
-        # Fallback to value or attribute checks if not standard
-        if hasattr(sol_result, "value"):
-            sol_result_val = int(sol_result.value)
-        else:
-            try:
-                sol_result_val = int(sol_result)
-            except (TypeError, ValueError):
-                sol_result_val = -1
-        is_successful = (sol_result_val == 0)
-    sol_result_str = "successful" if is_successful else str(sol_result)
-    num_steps = int(np.asarray(num_steps_jax))
-    
-    print(f"Simulation completed. Solver Result: {sol_result_str} (code: {sol_result_val}, success=0)")
+    print(f"Simulation completed. Solver Result: {status.label} (code: {status.code}, success=0)")
     print(f"Total adaptive integration steps: {num_steps}")
 
     # ---- 6. Diagnostics & Convergence Check ----
-    # ys has shape (n_save, n_rates, 1)
-    y_traj = ys[:, :, 0] # shape: (n_save, n_rates)
+    y_traj = trajectory.y_traj
     y_final = y_traj[-1, :] # shape: (n_rates,)
 
-    # Compute final derivatives (dy/dt) using WilsonCowanRHS
-    rhs_evaluator = WilsonCowanRHS(
-        weights=network.weights,
+    convergence = evaluate_fixed_patch_convergence(
+        cfg=cfg,
+        network=network,
         layout=layout,
         phi_exc=phi_exc,
         phi_inh=phi_inh,
-        tau_exc=tau_e,
-        tau_inh=tau_i,
-        n_batch=1,
+        drive_func=drive_func,
+        time_grid=time_grid,
+        y_traj=y_traj,
     )
-    
-    dy_dt_flat = rhs_evaluator(t1, y_final, drive_func)
-    dy_dt = dy_dt_flat.reshape(layout.n_rates, 1)
-    
-    dy_dt_exc = dy_dt[layout.idx_exc, 0]
-    dy_dt_inh = dy_dt[layout.idx_inh, 0]
-    
-    final_max_abs_drE_dt = float(np.max(np.abs(dy_dt_exc)))
-    final_max_abs_drI_dt = float(np.max(np.abs(dy_dt_inh)))
-    final_max_abs_dy_dt = max(final_max_abs_drE_dt, final_max_abs_drI_dt)
-    final_rms_dy_dt = float(np.sqrt(np.mean(dy_dt ** 2)))
-
-    # Compute peak-to-peak amplitude in the last 1 second to detect slow oscillations/drift
-    t_start_last_1s = max(t0, t1 - 1.0)
-    idx_last_1s = np.argmin(np.abs(save_ts - t_start_last_1s))
-    y_traj_last_1s = y_traj[idx_last_1s:, :]
-    peak_to_peak_last_1s = np.max(y_traj_last_1s, axis=0) - np.min(y_traj_last_1s, axis=0)
-    max_abs_delta_last_1s = float(np.max(peak_to_peak_last_1s))
-
-    # Determine convergence
-    rhs_converged = final_max_abs_dy_dt < 1.0
-    window_converged = max_abs_delta_last_1s < 0.05
-    is_converged = rhs_converged and window_converged
+    final_max_abs_drE_dt = convergence.final_max_abs_drE_dt
+    final_max_abs_drI_dt = convergence.final_max_abs_drI_dt
+    final_max_abs_dy_dt = convergence.final_max_abs_dy_dt
+    final_rms_dy_dt = convergence.final_rms_dy_dt
+    convergence_window_s = convergence.convergence_window_s
+    max_abs_delta_last_1s = convergence.max_abs_delta_last_1s
+    rhs_threshold = convergence.rhs_threshold
+    peak_to_peak_threshold = convergence.peak_to_peak_threshold
+    rhs_converged = convergence.rhs_converged
+    window_converged = convergence.window_converged
+    is_converged = convergence.converged
 
     # Population statistics
     exc_traj = y_traj[:, layout.idx_exc] # shape: (n_save, n_exc)
@@ -388,10 +249,13 @@ def main():
     print(f"Final max |dy_E/dt|:      {final_max_abs_drE_dt:.2e} Hz/s")
     print(f"Final max |dy_I/dt|:      {final_max_abs_drI_dt:.2e} Hz/s")
     print(f"Final RMS |dy/dt|:        {final_rms_dy_dt:.2e} Hz/s")
-    print(f"Peak-to-Peak change over final 1s: {max_abs_delta_last_1s:.2e} Hz")
+    print(f"Peak-to-Peak change over final {convergence_window_s:g}s: {max_abs_delta_last_1s:.2e} Hz")
     print("-" * 60)
-    print(f"RHS converges (max |dy/dt| < 1e-3):       {rhs_converged}")
-    print(f"Window converges (max P2P last 1s < 1e-4): {window_converged}")
+    print(f"RHS converges (max |dy/dt| < {rhs_threshold:g}):       {rhs_converged}")
+    print(
+        f"Window converges (max P2P last {convergence_window_s:g}s < {peak_to_peak_threshold:g}): "
+        f"{window_converged}"
+    )
     print(f"--> SYSTEM STABILIZED: {is_converged}")
     print("=" * 60)
 
@@ -412,12 +276,17 @@ def main():
 
     # ---- 8. Compute dy/dt trajectory over time for plotting ----
     print("Evaluating dy/dt trajectory over time...")
-    dy_dt_over_time = []
-    for step in range(n_save):
-        y_flat = y_traj[step, :]
-        dy_dt_flat = rhs_evaluator(save_ts[step], y_flat, drive_func)
-        dy_dt_over_time.append(dy_dt_flat)
-    dy_dt_over_time = np.stack(dy_dt_over_time) # shape: (n_save, n_rates)
+    dy_dt_over_time = evaluate_dy_dt_trajectory(
+        network=network,
+        layout=layout,
+        phi_exc=phi_exc,
+        phi_inh=phi_inh,
+        tau_e=tau_e,
+        tau_i=tau_i,
+        drive_func=drive_func,
+        save_ts=save_ts,
+        y_traj=y_traj,
+    )
     
     max_dy_dt_E = np.max(np.abs(dy_dt_over_time[:, layout.idx_exc]), axis=1)
     max_dy_dt_I = np.max(np.abs(dy_dt_over_time[:, layout.idx_inh]), axis=1)
@@ -459,7 +328,13 @@ def main():
     axs[1, 1].set_title("Convergence Speed (Log-Scale Derivative)", fontsize=11, fontweight="bold")
     axs[1, 1].set_xlabel("Time (s)")
     axs[1, 1].set_ylabel("Max |dy/dt| (Hz/s)")
-    axs[1, 1].axhline(1e-3, color="gray", linestyle="--", alpha=0.6, label="Threshold (1e-3)")
+    axs[1, 1].axhline(
+        rhs_threshold,
+        color="gray",
+        linestyle="--",
+        alpha=0.6,
+        label=f"Threshold ({rhs_threshold:g})",
+    )
     axs[1, 1].legend()
 
     plt.suptitle(
@@ -478,10 +353,16 @@ def main():
         "t_stop": t1,
         "solver": f"diffrax_{cfg.solver.diffrax.solver}",
         "num_steps": num_steps,
-        "diffrax_result_code": sol_result_val,
-        "diffrax_result_str": sol_result_str,
-        "rtol": rtol,
-        "atol": atol,
+        "diffrax_result_code": status.code,
+        "diffrax_result_str": status.label,
+        "rtol": float(cfg.training.bcm.steady_state_rel_tol),
+        "atol": float(cfg.training.bcm.steady_state_abs_tol),
+        "diffrax_max_steps": int(cfg.solver.diffrax.max_steps),
+        "initial_dt_tau_min_fraction": float(cfg.solver.diffrax.initial_dt_tau_min_fraction),
+        "trajectory_sample_points": n_save,
+        "convergence_window_s": convergence_window_s,
+        "dy_dt_threshold": rhs_threshold,
+        "peak_to_peak_threshold": peak_to_peak_threshold,
         "final_mean_E": final_mean_E,
         "final_mean_I": final_mean_I,
         "final_std_E": final_std_E,

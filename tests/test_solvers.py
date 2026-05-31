@@ -6,12 +6,17 @@ import numpy as np
 from scipy import sparse
 
 from v1_simulation.config import load_config
-from v1_simulation.config.schema import RootConfig, SolverConfig, TransferConfig
+from v1_simulation.config.schema import DiffraxSolverConfig, RootConfig, SolverConfig, TransferConfig
 from v1_simulation.config.validation import validate_config
 from v1_simulation.network.state import NetworkState, PopulationLayout
 from v1_simulation.network.geometry import SheetGeometry
 from v1_simulation.solvers import solve_wilson_cowan_batch
 from v1_simulation.solvers.base import NetworkLayout, SolverOptions
+from v1_simulation.solvers.fixed_patch import (
+    FixedPatchTimeGrid,
+    build_fixed_patch_time_grid,
+    evaluate_fixed_patch_convergence,
+)
 from v1_simulation.solvers.scipy_backend import solve_scipy
 from v1_simulation.solvers.wilson_cowan import WilsonCowanRHS
 from v1_simulation.transfer.siegert import TransferTable
@@ -22,10 +27,14 @@ class SolverConfigTests(unittest.TestCase):
         jax_cfg = load_config(overrides=["solver=jax"])
         self.assertEqual(jax_cfg.solver.backend, "jax-rk4")
         self.assertEqual(jax_cfg.solver.method, "RK4")
+        self.assertEqual(jax_cfg.solver.diagnostics.trajectory_sample_points, 2000)
 
         diffrax_cfg = load_config(overrides=["solver=diffrax_tsit5"])
         self.assertEqual(diffrax_cfg.solver.backend, "diffrax")
         self.assertEqual(diffrax_cfg.solver.method, "adaptive")
+        self.assertEqual(diffrax_cfg.solver.diffrax.max_steps, 4096)
+        self.assertEqual(diffrax_cfg.solver.diffrax.initial_dt_tau_min_fraction, 0.1)
+        self.assertEqual(diffrax_cfg.solver.diagnostics.peak_to_peak_threshold, 0.05)
 
         smoke_cfg = load_config(overrides=["+experiment=smoke"])
         self.assertEqual(smoke_cfg.solver.transfer.mu_tab_max, 2.0)
@@ -52,6 +61,58 @@ class SolverConfigTests(unittest.TestCase):
 
         self.assertFalse(simulate_options.early_stop_enabled)
         self.assertTrue(training_options.early_stop_enabled)
+
+    def test_solver_options_include_schema_runtime_parameters(self) -> None:
+        cfg = load_config(
+            overrides=[
+                "solver=diffrax_tsit5",
+                "solver.diffrax.max_steps=12345",
+                "solver.diffrax.initial_dt_tau_min_fraction=0.25",
+                "solver.diagnostics.trajectory_sample_points=321",
+                "solver.diagnostics.convergence_window_s=2.5",
+                "solver.diagnostics.dy_dt_threshold=0.125",
+                "solver.diagnostics.peak_to_peak_threshold=0.025",
+            ]
+        )
+
+        options = SolverOptions.from_config(cfg.solver)
+
+        self.assertEqual(options.diffrax_max_steps, 12345)
+        self.assertEqual(options.diffrax_initial_dt_tau_min_fraction, 0.25)
+        self.assertEqual(options.diagnostics_trajectory_sample_points, 321)
+        self.assertEqual(options.diagnostics_convergence_window_s, 2.5)
+        self.assertEqual(options.diagnostics_dy_dt_threshold, 0.125)
+        self.assertEqual(options.diagnostics_peak_to_peak_threshold, 0.025)
+
+    def test_solver_runtime_parameter_validation(self) -> None:
+        bad_diffrax_steps = RootConfig()
+        bad_diffrax_steps.solver.backend = "diffrax"
+        bad_diffrax_steps.solver.method = "adaptive"
+        bad_diffrax_steps.solver.diffrax = DiffraxSolverConfig()
+        bad_diffrax_steps.solver.diffrax.max_steps = 0
+        with self.assertRaisesRegex(ValueError, "solver.diffrax.max_steps"):
+            validate_config(bad_diffrax_steps)
+
+        bad_diag_points = RootConfig()
+        bad_diag_points.solver.diagnostics.trajectory_sample_points = 1
+        with self.assertRaisesRegex(ValueError, "solver.diagnostics.trajectory_sample_points"):
+            validate_config(bad_diag_points)
+
+    def test_fixed_patch_time_grid_uses_solver_schema_fields(self) -> None:
+        cfg = RootConfig()
+        cfg.solver.diffrax = DiffraxSolverConfig(initial_dt_tau_min_fraction=0.25)
+        cfg.solver.transfer.tau_e = 0.02
+        cfg.solver.transfer.tau_i = 0.01
+        cfg.simulation.t_start = 0.5
+        cfg.simulation.t_stop = 1.5
+        cfg.solver.diagnostics.trajectory_sample_points = 5
+
+        grid = build_fixed_patch_time_grid(cfg)
+
+        self.assertEqual(grid.t0, 0.5)
+        self.assertEqual(grid.t1, 1.5)
+        self.assertEqual(grid.dt0, 0.0025)
+        np.testing.assert_allclose(grid.save_ts, np.linspace(0.5, 1.5, 5))
 
 
 class WilsonCowanSolverTests(unittest.TestCase):
@@ -104,16 +165,45 @@ class WilsonCowanSolverTests(unittest.TestCase):
                     SolverOptions(backend="scipy", method="RK45"),
                 )
 
+    def test_fixed_patch_convergence_diagnostics_for_static_fixed_point(self) -> None:
+        cfg = RootConfig()
+        cfg.solver.diagnostics.dy_dt_threshold = 0.1
+        cfg.solver.diagnostics.peak_to_peak_threshold = 0.1
+        network = _tiny_network()
+        layout = NetworkLayout.from_network_state(network)
+        y_traj = np.zeros((5, layout.n_rates), dtype=float)
+        time_grid = FixedPatchTimeGrid(
+            t0=0.0,
+            t1=1.0,
+            dt0=0.01,
+            save_ts=np.linspace(0.0, 1.0, 5),
+        )
+
+        convergence = evaluate_fixed_patch_convergence(
+            cfg=cfg,
+            network=network,
+            layout=layout,
+            phi_exc=lambda x: np.maximum(x, 0.0),
+            phi_inh=lambda x: np.maximum(x, 0.0),
+            drive_func=lambda _t: np.array([0.0]),
+            time_grid=time_grid,
+            y_traj=y_traj,
+        )
+
+        self.assertEqual(convergence.final_max_abs_dy_dt, 0.0)
+        self.assertEqual(convergence.max_abs_delta_last_1s, 0.0)
+        self.assertTrue(convergence.converged)
+
 
 class DiffraxSolverTests(unittest.TestCase):
     def test_missing_optional_dependency_raises_runtime_error(self) -> None:
         with patch.dict("sys.modules", {"diffrax": None}):
             with self.assertRaisesRegex(RuntimeError, "requires installing the optional JAX dependencies"):
-                from v1_simulation.solvers.jax_backend import _require_diffrax
-                _require_diffrax()
+                from v1_simulation.solvers.jax_utils import require_diffrax
+                require_diffrax()
 
     def test_diffrax_shape_and_finite_smoke_test(self) -> None:
-        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        from v1_simulation.solvers.jax_utils import is_diffrax_available
         if not is_diffrax_available():
             self.skipTest("Diffrax not installed")
 
@@ -145,7 +235,7 @@ class DiffraxSolverTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.inh).all())
 
     def test_diffrax_float32_support(self) -> None:
-        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        from v1_simulation.solvers.jax_utils import is_diffrax_available
         if not is_diffrax_available():
             self.skipTest("Diffrax not installed")
 
@@ -194,7 +284,7 @@ class DiffraxSolverTests(unittest.TestCase):
 
 
     def test_diffrax_determinism(self) -> None:
-        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        from v1_simulation.solvers.jax_utils import is_diffrax_available
         if not is_diffrax_available():
             self.skipTest("Diffrax not installed")
 
@@ -225,7 +315,7 @@ class DiffraxSolverTests(unittest.TestCase):
         np.testing.assert_allclose(res1.inh, res2.inh)
 
     def test_diffrax_loose_comparison_with_scipy(self) -> None:
-        from v1_simulation.solvers.jax_backend import is_diffrax_available
+        from v1_simulation.solvers.jax_utils import is_diffrax_available
         if not is_diffrax_available():
             self.skipTest("Diffrax not installed")
 

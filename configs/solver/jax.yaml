@@ -17,3 +17,13 @@ early_stop:
   norm: max
   rk4_window: 5
   only_static_input: true
+
+diagnostics:
+  enabled: true
+  probe_dt: 1.0
+  eval_dy_at: mean
+  variables: exc
+  trajectory_sample_points: 2000
+  convergence_window_s: 1.0
+  dy_dt_threshold: 1.0
+  peak_to_peak_threshold: 0.05

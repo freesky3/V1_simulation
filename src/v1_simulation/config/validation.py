@@ -1,6 +1,7 @@
 import math
 
 from v1_simulation.config.schema import RootConfig, TransferConfig
+from v1_simulation.solvers.jax_utils import SUPPORTED_DIFFRAX_SOLVERS
 
 
 def _require_bool(value: bool, path: str) -> None:
@@ -227,11 +228,53 @@ def validate_config(cfg: RootConfig) -> None:
         if sol.jax.dtype not in {"float32", "float64"}:
             raise ValueError(f"solver.jax.dtype must be 'float32' or 'float64', got {sol.jax.dtype!r}")
     if sol.diffrax is not None:
-        if sol.diffrax.solver not in {"tsit5", "heun"}:
-            raise ValueError(f"solver.diffrax.solver must be 'tsit5' or 'heun', got {sol.diffrax.solver!r}")
+        if sol.diffrax.solver not in SUPPORTED_DIFFRAX_SOLVERS:
+            allowed = ", ".join(repr(name) for name in SUPPORTED_DIFFRAX_SOLVERS)
+            raise ValueError(f"solver.diffrax.solver must be one of {allowed}, got {sol.diffrax.solver!r}")
         if sol.diffrax.steady_state_tail_points <= 0:
             raise ValueError(
                 f"solver.diffrax.steady_state_tail_points must be positive, got {sol.diffrax.steady_state_tail_points}"
+            )
+        if sol.diffrax.max_steps <= 0:
+            raise ValueError(f"solver.diffrax.max_steps must be positive, got {sol.diffrax.max_steps}")
+        if _finite_float(sol.diffrax.initial_dt_tau_min_fraction, "solver.diffrax.initial_dt_tau_min_fraction") <= 0.0:
+            raise ValueError(
+                "solver.diffrax.initial_dt_tau_min_fraction must be positive, "
+                f"got {sol.diffrax.initial_dt_tau_min_fraction}"
+            )
+    if sol.diagnostics is not None:
+        _require_bool(sol.diagnostics.enabled, "solver.diagnostics.enabled")
+        if _finite_float(sol.diagnostics.probe_dt, "solver.diagnostics.probe_dt") <= 0.0:
+            raise ValueError(f"solver.diagnostics.probe_dt must be positive, got {sol.diagnostics.probe_dt}")
+        if sol.diagnostics.eval_dy_at not in {"mean", "final"}:
+            raise ValueError(
+                "solver.diagnostics.eval_dy_at must be 'mean' or 'final', "
+                f"got {sol.diagnostics.eval_dy_at!r}"
+            )
+        if sol.diagnostics.variables not in {"exc", "all"}:
+            raise ValueError(
+                "solver.diagnostics.variables must be 'exc' or 'all', "
+                f"got {sol.diagnostics.variables!r}"
+            )
+        if sol.diagnostics.trajectory_sample_points <= 1:
+            raise ValueError(
+                "solver.diagnostics.trajectory_sample_points must be greater than 1, "
+                f"got {sol.diagnostics.trajectory_sample_points}"
+            )
+        if _finite_float(sol.diagnostics.convergence_window_s, "solver.diagnostics.convergence_window_s") <= 0.0:
+            raise ValueError(
+                "solver.diagnostics.convergence_window_s must be positive, "
+                f"got {sol.diagnostics.convergence_window_s}"
+            )
+        if _finite_float(sol.diagnostics.dy_dt_threshold, "solver.diagnostics.dy_dt_threshold") <= 0.0:
+            raise ValueError(
+                "solver.diagnostics.dy_dt_threshold must be positive, "
+                f"got {sol.diagnostics.dy_dt_threshold}"
+            )
+        if _finite_float(sol.diagnostics.peak_to_peak_threshold, "solver.diagnostics.peak_to_peak_threshold") <= 0.0:
+            raise ValueError(
+                "solver.diagnostics.peak_to_peak_threshold must be positive, "
+                f"got {sol.diagnostics.peak_to_peak_threshold}"
             )
 
     # 7. Simulation Config
@@ -364,6 +407,11 @@ def validate_config(cfg: RootConfig) -> None:
         duration_tau_e = _finite_float(bcm.duration_tau_e, "training.bcm.duration_tau_e")
         if duration_tau_e <= 0.0:
             raise ValueError(f"training.bcm.duration_tau_e must be positive, got {bcm.duration_tau_e}")
+        if _finite_float(bcm.dt_tau_i_fraction, "training.bcm.dt_tau_i_fraction") <= 0.0:
+            raise ValueError(
+                "training.bcm.dt_tau_i_fraction must be positive, "
+                f"got {bcm.dt_tau_i_fraction}"
+            )
 
 
     # 10. Sweep Config

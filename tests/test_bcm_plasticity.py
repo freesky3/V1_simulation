@@ -8,6 +8,7 @@ from v1_simulation.config.schema import RootConfig, TrainingBCMConfig
 from v1_simulation.config.validation import validate_config
 from v1_simulation.network.geometry import SheetGeometry
 from v1_simulation.network.state import NetworkState, PopulationLayout
+from v1_simulation.simulation.pipeline import default_training_time_grid
 from v1_simulation.training.bcm import BCMThetaState, update_theta
 from v1_simulation.training.plasticity import (
     bcm_training_step,
@@ -127,6 +128,7 @@ class BCMPlasticityTests(unittest.TestCase):
         self.assertTrue(cfg.training.enabled)
         self.assertEqual(cfg.training.bcm.theta_update_order, "pre")
         self.assertEqual(cfg.training.bcm.duration_tau_e, 30.0)
+        self.assertEqual(cfg.training.bcm.dt_tau_i_fraction, 1.0 / 3.0)
 
         # 1. Test invalid theta_update_order
         bad = RootConfig()
@@ -147,6 +149,25 @@ class BCMPlasticityTests(unittest.TestCase):
         bad_duration.training.bcm.duration_tau_e = -5.0
         with self.assertRaisesRegex(ValueError, "training.bcm.duration_tau_e must be positive"):
             validate_config(bad_duration)
+
+        bad_dt_fraction = RootConfig()
+        bad_dt_fraction.training.enabled = True
+        bad_dt_fraction.training.natural_image.dir = "data/vanhateren_iml"
+        bad_dt_fraction.training.bcm.dt_tau_i_fraction = 0.0
+        with self.assertRaisesRegex(ValueError, "training.bcm.dt_tau_i_fraction must be positive"):
+            validate_config(bad_dt_fraction)
+
+    def test_training_time_grid_uses_bcm_schema_dt_fraction(self) -> None:
+        cfg = RootConfig()
+        cfg.training.bcm.duration_tau_e = 2.0
+        cfg.training.bcm.dt_tau_i_fraction = 0.5
+        cfg.solver.transfer.tau_e = 0.02
+        cfg.solver.transfer.tau_i = 0.01
+
+        time = default_training_time_grid(cfg)
+
+        np.testing.assert_allclose(time[:3], [0.0, 0.005, 0.01])
+        self.assertLess(time[-1], 0.04)
 
 
 

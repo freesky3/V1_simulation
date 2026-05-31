@@ -7,7 +7,8 @@ import diffrax
 import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-from v1_simulation.solvers.jax_backend import _make_diffrax_diffeqsolve, _make_jax_rk4
+from v1_simulation.solvers.diffrax_backend import make_diffrax_diffeqsolve
+from v1_simulation.solvers.jax_rk4_backend import make_jax_rk4
 
 # Dummy mock object
 class DummyExternalDrive:

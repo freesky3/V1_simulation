@@ -22,9 +22,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 try:
-    import diffrax
-    import jax
-    import jax.numpy as jnp
+    import diffrax  # noqa: F401
+    import jax  # noqa: F401
 except ImportError:
     print("Error: This script requires JAX and Diffrax to be installed.", file=sys.stderr)
     print("Please run it in an environment with GPU/JAX/Diffrax support.", file=sys.stderr)
@@ -37,8 +36,12 @@ def main():
     from v1_simulation.data.natural_images import apply_crop
     from v1_simulation.network.builder import build_network_state
     from v1_simulation.solvers.base import NetworkLayout
-    from v1_simulation.solvers.jax_backend import _slice_weight_blocks, _transfer_table_arrays
-    from v1_simulation.solvers.wilson_cowan import _resolve_transfer_functions, WilsonCowanRHS
+    from v1_simulation.solvers.fixed_patch import (
+        build_fixed_patch_time_grid,
+        evaluate_fixed_patch_convergence,
+        solve_static_fixed_patch_diffrax,
+    )
+    from v1_simulation.solvers.wilson_cowan import _resolve_transfer_functions
     from v1_simulation.training.natural_inputs import build_natural_image_l4_drive
 
     # ---- 1. Load Config & Apply Overrides ----
@@ -140,89 +143,19 @@ def main():
     g_vals = [5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0]
     print(f"Sweep grids: j={j_vals}, g={g_vals} (total combinations: {len(j_vals) * len(g_vals)})")
 
-    # Time grid setup
-    t0 = 0.0
-    t1 = float(cfg.simulation.t_stop) if (hasattr(cfg, "simulation") and cfg.simulation.t_stop is not None) else 100.0
-    tau_e = float(cfg.solver.transfer.tau_e)
-    tau_i = float(cfg.solver.transfer.tau_i)
-    dt0 = min(tau_e, tau_i) / 10.0
-    save_ts = np.linspace(t0, t1, 2000, dtype=np.float64)
-
-    # JAX compilation variables
-    j_save_ts = jnp.asarray(save_ts)
+    # Time grid and transfer functions
+    time_grid = build_fixed_patch_time_grid(cfg)
+    t1 = time_grid.t1
+    save_ts = time_grid.save_ts
+    n_save = save_ts.size
     phi_exc, phi_inh = _resolve_transfer_functions(
         transfer_config=cfg.solver.transfer,
         transfer_tables=None,
         phi_exc=None,
         phi_inh=None,
     )
-    phi_exc_x, phi_exc_y = _transfer_table_arrays(phi_exc, "phi_exc")
-    phi_inh_x, phi_inh_y = _transfer_table_arrays(phi_inh, "phi_inh")
-    jax_dtype = jnp.float32 if cfg.solver.jax.dtype == "float32" else jnp.float64
-    rtol = float(cfg.training.bcm.steady_state_rel_tol) if hasattr(cfg.training.bcm, "steady_state_rel_tol") else 1e-5
-    atol = float(cfg.training.bcm.steady_state_abs_tol) if hasattr(cfg.training.bcm, "steady_state_abs_tol") else 1e-3
-
-    # Define Diffrax vector field and JAX solver function
-    def interp_phi(x, xp, fp):
-        return jnp.interp(x, xp, fp, left=fp[0], right=fp[-1])
-
-    def vector_field(t, y, args):
-        W_exc_a, W_inh_a, mu_ext_a, phi_exc_x_a, phi_exc_y_a, phi_inh_x_a, phi_inh_y_a, tau_e_a, tau_i_a, idx_exc_a, idx_inh_a = args
-        mu = W_exc_a @ y[idx_exc_a, :] + W_inh_a @ y[idx_inh_a, :] + mu_ext_a
-        dy = jnp.zeros_like(y)
-        dy = dy.at[idx_exc_a, :].set((-y[idx_exc_a, :] + interp_phi(tau_e_a * mu[idx_exc_a, :], phi_exc_x_a, phi_exc_y_a)) / tau_e_a)
-        dy = dy.at[idx_inh_a, :].set((-y[idx_inh_a, :] + interp_phi(tau_i_a * mu[idx_inh_a, :], phi_inh_x_a, phi_inh_y_a)) / tau_i_a)
-        return dy
-
-    @jax.jit
-    def run_integration(
-        y0_val, W_exc_val, W_inh_val, mu_ext_val, 
-        phi_exc_x_val, phi_exc_y_val, phi_inh_x_val, phi_inh_y_val,
-        tau_e_val, tau_i_val, idx_exc_val, idx_inh_val, save_ts_val
-    ):
-        term = diffrax.ODETerm(vector_field)
-        solver_name = str(cfg.solver.diffrax.solver).lower()
-        if solver_name == "tsit5":
-            solver = diffrax.Tsit5()
-        elif solver_name == "heun":
-            solver = diffrax.Heun()
-        elif solver_name == "kvaerno5":
-            solver = diffrax.Kvaerno5()
-        elif solver_name == "kvaerno3":
-            solver = diffrax.Kvaerno3()
-        else:
-            raise ValueError(f"Unsupported diffrax solver: {solver_name}")
-            
-        stepsize_controller = diffrax.PIDController(rtol=rtol, atol=atol)
-        saveat = diffrax.SaveAt(ts=save_ts_val)
-
-        args = (
-            W_exc_val,
-            W_inh_val,
-            mu_ext_val,
-            phi_exc_x_val,
-            phi_exc_y_val,
-            phi_inh_x_val,
-            phi_inh_y_val,
-            tau_e_val,
-            tau_i_val,
-            idx_exc_val,
-            idx_inh_val,
-        )
-
-        sol = diffrax.diffeqsolve(
-            term,
-            solver,
-            t0=t0,
-            t1=t1,
-            dt0=dt0,
-            y0=y0_val,
-            args=args,
-            saveat=saveat,
-            stepsize_controller=stepsize_controller,
-            max_steps=1000000,
-        )
-        return sol.ys, sol.result, sol.stats["num_steps"]
+    rtol = float(cfg.training.bcm.steady_state_rel_tol)
+    atol = float(cfg.training.bcm.steady_state_abs_tol)
 
     # ---- 5. Run Grid Sweep ----
     results_grid = []
@@ -243,113 +176,55 @@ def main():
             
             network = build_network_state(cfg)
             layout = NetworkLayout.from_network_state(network)
-            
-            # Prepare JAX arrays and sliced weights
-            j_idx_exc = jnp.asarray(layout.idx_exc, dtype=jnp.int32)
-            j_idx_inh = jnp.asarray(layout.idx_inh, dtype=jnp.int32)
-            W_exc, W_inh, W_ext = _slice_weight_blocks(
-                network.weights,
-                layout.idx_exc,
-                layout.idx_inh,
-                layout.idx_ext,
-                jnp,
-                prefer_sparse=bool(cfg.solver.jax.prefer_sparse),
-                dense_max_mb=float(cfg.solver.jax.dense_max_mb),
-                dtype=jax_dtype,
-            )
-            
-            y0 = jnp.zeros((layout.n_rates, 1), dtype=jax_dtype)
-            ax_0 = jnp.asarray(input_rates[:, np.newaxis], dtype=jax_dtype)
-            mu_ext = W_ext @ ax_0
 
             # Solve Wilson-Cowan dynamics
-            ys, sol_result, num_steps_jax = run_integration(
-                y0, W_exc, W_inh, mu_ext,
-                jnp.asarray(phi_exc_x, dtype=jax_dtype),
-                jnp.asarray(phi_exc_y, dtype=jax_dtype),
-                jnp.asarray(phi_inh_x, dtype=jax_dtype),
-                jnp.asarray(phi_inh_y, dtype=jax_dtype),
-                jnp.asarray(tau_e, dtype=jax_dtype),
-                jnp.asarray(tau_i, dtype=jax_dtype),
-                j_idx_exc,
-                j_idx_inh,
-                j_save_ts
+            trajectory = solve_static_fixed_patch_diffrax(
+                cfg=cfg,
+                network=network,
+                layout=layout,
+                input_rates=input_rates,
+                phi_exc=phi_exc,
+                phi_inh=phi_inh,
+                time_grid=time_grid,
             )
             
-            # Extract variables
-            ys = np.asarray(ys)
-            num_steps = int(np.asarray(num_steps_jax))
-            
-            # Check success using diffrax enum comparison
-            is_successful = False
-            try:
-                # Compare directly with diffrax.RESULTS enum
-                is_successful = bool(np.asarray(sol_result == diffrax.RESULTS.successful))
-                sol_result_val = 0 if is_successful else -1
-            except Exception:
-                # Fallback to value or attribute checks if not standard
-                if hasattr(sol_result, "value"):
-                    sol_result_val = int(sol_result.value)
-                else:
-                    try:
-                        sol_result_val = int(sol_result)
-                    except (TypeError, ValueError):
-                        sol_result_val = -1
-                is_successful = (sol_result_val == 0)
-            sol_result_str = "successful" if is_successful else str(sol_result)
-            
-            y_traj = ys[:, :, 0]
-            y_final = y_traj[-1, :]
-
-            # Compute final derivatives (dy/dt) using WilsonCowanRHS
-            rhs_evaluator = WilsonCowanRHS(
-                weights=network.weights,
+            status = trajectory.status
+            y_traj = trajectory.y_traj
+            convergence = evaluate_fixed_patch_convergence(
+                cfg=cfg,
+                network=network,
                 layout=layout,
                 phi_exc=phi_exc,
                 phi_inh=phi_inh,
-                tau_exc=tau_e,
-                tau_inh=tau_i,
-                n_batch=1,
+                drive_func=drive_func,
+                time_grid=time_grid,
+                y_traj=y_traj,
             )
-            dy_dt_flat = rhs_evaluator(t1, y_final, drive_func)
-            dy_dt = dy_dt_flat.reshape(layout.n_rates, 1)
-            
-            final_max_abs_drE_dt = float(np.max(np.abs(dy_dt[layout.idx_exc, 0])))
-            final_max_abs_drI_dt = float(np.max(np.abs(dy_dt[layout.idx_inh, 0])))
-            final_max_abs_dy_dt = max(final_max_abs_drE_dt, final_max_abs_drI_dt)
-            final_rms_dy_dt = float(np.sqrt(np.mean(dy_dt ** 2)))
-
-            # Compute peak-to-peak amplitude in the last 1s
-            t_start_last_1s = max(t0, t1 - 1.0)
-            idx_last_1s = np.argmin(np.abs(save_ts - t_start_last_1s))
-            y_traj_last_1s = y_traj[idx_last_1s:, :]
-            peak_to_peak_last_1s = np.max(y_traj_last_1s, axis=0) - np.min(y_traj_last_1s, axis=0)
-            max_abs_delta_last_1s = float(np.max(peak_to_peak_last_1s))
-
-            # Determine convergence criteria
-            rhs_converged = final_max_abs_dy_dt < 1.0
-            window_converged = max_abs_delta_last_1s < 0.05
-            is_stable = bool(is_successful and rhs_converged and window_converged)
+            is_stable = bool(status.successful and convergence.converged)
 
             # Store in matrices
             stability_matrix[j_idx, g_idx] = 1.0 if is_stable else 0.0
-            max_dy_dt_matrix[j_idx, g_idx] = final_max_abs_dy_dt
-            p2p_matrix[j_idx, g_idx] = max_abs_delta_last_1s
+            max_dy_dt_matrix[j_idx, g_idx] = convergence.final_max_abs_dy_dt
+            p2p_matrix[j_idx, g_idx] = convergence.max_abs_delta_last_1s
 
             # Log this combination
             record = {
                 "j": j_val,
                 "g": g_val,
-                "num_steps": num_steps,
-                "diffrax_result_code": sol_result_val,
-                "diffrax_result_str": sol_result_str,
-                "final_max_abs_dy_dt": final_max_abs_dy_dt,
-                "final_rms_dy_dt": final_rms_dy_dt,
-                "max_abs_delta_last_1s": max_abs_delta_last_1s,
+                "num_steps": status.num_steps,
+                "diffrax_result_code": status.code,
+                "diffrax_result_str": status.label,
+                "final_max_abs_dy_dt": convergence.final_max_abs_dy_dt,
+                "final_rms_dy_dt": convergence.final_rms_dy_dt,
+                "max_abs_delta_last_1s": convergence.max_abs_delta_last_1s,
                 "stable": is_stable,
             }
             results_grid.append(record)
-            print(f"  Result: stable={is_stable}, steps={num_steps}, max|dy/dt|={final_max_abs_dy_dt:.2e}, P2P={max_abs_delta_last_1s:.2e}")
+            print(
+                f"  Result: stable={is_stable}, steps={status.num_steps}, "
+                f"max|dy/dt|={convergence.final_max_abs_dy_dt:.2e}, "
+                f"P2P={convergence.max_abs_delta_last_1s:.2e}"
+            )
 
     # ---- 6. Generate Stability Heatmap & Visual Reports ----
     print("Generating stability parameter space heatmap...")
@@ -417,6 +292,12 @@ def main():
         "solver": f"diffrax_{cfg.solver.diffrax.solver}",
         "rtol": rtol,
         "atol": atol,
+        "diffrax_max_steps": int(cfg.solver.diffrax.max_steps),
+        "initial_dt_tau_min_fraction": float(cfg.solver.diffrax.initial_dt_tau_min_fraction),
+        "trajectory_sample_points": n_save,
+        "convergence_window_s": float(cfg.solver.diagnostics.convergence_window_s),
+        "dy_dt_threshold": float(cfg.solver.diagnostics.dy_dt_threshold),
+        "peak_to_peak_threshold": float(cfg.solver.diagnostics.peak_to_peak_threshold),
         "j_grid": j_vals,
         "g_grid": g_vals,
         "image_path": str(sample.path),

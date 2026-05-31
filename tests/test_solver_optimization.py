@@ -15,18 +15,13 @@ from v1_simulation.network.state import NetworkState, PopulationLayout
 from v1_simulation.network.geometry import SheetGeometry
 from v1_simulation.solvers import solve_wilson_cowan_batch
 from v1_simulation.solvers.base import NetworkLayout, SolverOptions
-from v1_simulation.solvers.jax_backend import (
+from v1_simulation.solvers.jax_inputs import precompute_rk4_background, precompute_rk4_inputs
+from v1_simulation.solvers.jax_rk4_backend import make_jax_rk4
+from v1_simulation.solvers.jax_utils import (
     is_diffrax_available,
     is_jax_available,
-    _make_diffrax_diffeqsolve,
-    _make_jax_rk4,
-    _prepare_jax_matrix,
-    _precompute_diffrax_inputs,
-    _precompute_diffrax_background,
-    _precompute_rk4_inputs,
-    _precompute_rk4_background,
-    _slice_weight_blocks,
-    _transfer_table_arrays,
+    slice_weight_blocks,
+    transfer_table_arrays,
 )
 from v1_simulation.transfer.siegert import TransferTable
 
@@ -163,7 +158,7 @@ class SolverOptimizationTests(unittest.TestCase):
         y0 = jnp.zeros((net_layout.n_rates, self.n_batch), dtype=jnp.float64)
 
         # Pre-slice weight blocks (dense, for gradient tracing)
-        W_exc, W_inh, W_ext = _slice_weight_blocks(
+        W_exc, W_inh, W_ext = slice_weight_blocks(
             self.network.weights,
             net_layout.idx_exc,
             net_layout.idx_inh,
@@ -174,28 +169,28 @@ class SolverOptimizationTests(unittest.TestCase):
         )
 
         # Precompute inputs
-        ax_left, ax_mid, ax_right = _precompute_rk4_inputs(
+        ax_left, ax_mid, ax_right = precompute_rk4_inputs(
             lambda _t: np.array([[1.0, 2.0]]),
             self.time,
             n_ext=n_ext,
             n_batch=self.n_batch,
         )
-        bg_left_e, bg_mid_e, bg_right_e, bg_left_i, bg_mid_i, bg_right_i = _precompute_rk4_background(
+        bg_left_e, bg_mid_e, bg_right_e, bg_left_i, bg_mid_i, bg_right_i = precompute_rk4_background(
             None,
             layout=net_layout,
             n_batch=self.n_batch,
             time=self.time,
         )
-        phi_exc_x, phi_exc_y, phi_exc_rate_max = _transfer_table_arrays(self.phi_table, "phi_exc")
-        phi_inh_x, phi_inh_y, phi_inh_rate_max = _transfer_table_arrays(self.phi_table, "phi_inh")
+        phi_exc_x, phi_exc_y, phi_exc_rate_max = transfer_table_arrays(self.phi_table, "phi_exc")
+        phi_inh_x, phi_inh_y, phi_inh_rate_max = transfer_table_arrays(self.phi_table, "phi_inh")
 
         # Static precomputed mu_ext
         mu_ext_static = W_ext @ jnp.asarray(ax_left[0])
         mu_ext_zero = jnp.zeros((net_layout.n_rates, self.n_batch), dtype=jnp.float64)
 
         # Compile both branches
-        run_static = _make_jax_rk4(jax, jnp, store_trajectory=True, is_static=True)
-        run_dynamic = _make_jax_rk4(jax, jnp, store_trajectory=True, is_static=False)
+        run_static = make_jax_rk4(jax, jnp, store_trajectory=True, is_static=True)
+        run_dynamic = make_jax_rk4(jax, jnp, store_trajectory=True, is_static=False)
 
         common_args = dict(
             idx_exc=jnp.asarray(net_layout.idx_exc, dtype=jnp.int32),
@@ -261,7 +256,7 @@ class SolverOptimizationTests(unittest.TestCase):
     def test_weight_block_slicing(self) -> None:
         """Verify that pre-sliced W blocks reproduce the full weights @ sources product."""
         net_layout = self.net_layout
-        W_exc, W_inh, W_ext = _slice_weight_blocks(
+        W_exc, W_inh, W_ext = slice_weight_blocks(
             self.network.weights,
             net_layout.idx_exc,
             net_layout.idx_inh,
@@ -298,7 +293,7 @@ class SolverOptimizationTests(unittest.TestCase):
             rate_max=7.5,
         )
 
-        x, y, rate_max = _transfer_table_arrays(table, "phi_exc")
+        x, y, rate_max = transfer_table_arrays(table, "phi_exc")
 
         np.testing.assert_allclose(x, table.mu)
         np.testing.assert_allclose(y, table.rate)
