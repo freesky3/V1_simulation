@@ -314,6 +314,40 @@ class DiffraxSolverTests(unittest.TestCase):
         np.testing.assert_allclose(res1.exc, res2.exc)
         np.testing.assert_allclose(res1.inh, res2.inh)
 
+    def test_diffrax_early_stop_index_uses_saved_time_grid(self) -> None:
+        from v1_simulation.solvers.jax_utils import is_diffrax_available
+        if not is_diffrax_available():
+            self.skipTest("Diffrax not installed")
+
+        network = _tiny_network()
+        time = np.linspace(0.0, 0.5, 11)
+        phi_table = TransferTable(
+            np.linspace(-1.0, 1.0, 16),
+            np.zeros(16),
+        )
+        solver_config = SolverConfig(backend="diffrax", method="adaptive")
+        solver_config.early_stop.enabled = True
+        solver_config.early_stop.min_time = 0.05
+        solver_config.early_stop.f_atol = 1e-4
+        solver_config.early_stop.f_rtol = 0.0
+
+        result = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[0.0]]),
+            time=time,
+            n_batch=1,
+            solver_config=solver_config,
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=phi_table,
+            phi_inh=phi_table,
+            store_trajectory=False,
+        )
+
+        self.assertTrue(result.steady_state_reached)
+        self.assertIsNotNone(result.steady_state_index)
+        self.assertLessEqual(result.steady_state_index, time.size)
+        self.assertLessEqual(result.summary_end_index, time.size)
+
     def test_diffrax_loose_comparison_with_scipy(self) -> None:
         from v1_simulation.solvers.jax_utils import is_diffrax_available
         if not is_diffrax_available():

@@ -379,9 +379,15 @@ def make_diffrax_diffeqsolve(
 
         y_all = sol.ys
 
+        finite_rows = jnp.all(jnp.isfinite(y_all), axis=tuple(range(1, y_all.ndim)))
+        finite_count = jnp.sum(finite_rows.astype(jnp.int32))
+
         if early_stop_enabled:
             ss_reached = jnp.where(sol.result == diffrax.RESULTS.event_occurred, 1, 0)
-            ss_index = sol.stats["num_steps"]
+            # Diffrax stats["num_steps"] is the internal solver step count, not
+            # an index into saved values. Use the exclusive end of finite saved
+            # rows so downstream summary windows stay on the returned time grid.
+            ss_index = finite_count
         else:
             ss_reached = 0
             ss_index = -1
@@ -389,9 +395,7 @@ def make_diffrax_diffeqsolve(
         if store_trajectory:
             return y_all, ss_reached, ss_index, jnp.nan, jnp.nan, jnp.nan, jnp.nan
 
-        finite_rows = jnp.all(jnp.isfinite(y_all), axis=(1, 2))
         finite_rank = jnp.cumsum(finite_rows.astype(jnp.int32))
-        finite_count = finite_rank[-1]
         has_finite = finite_count > 0
         summary_start_rank = jnp.maximum(jnp.int32(1), finite_count - jnp.asarray(tail_points, dtype=jnp.int32) + 1)
         summary_mask = jnp.logical_and(finite_rows, finite_rank >= summary_start_rank)
