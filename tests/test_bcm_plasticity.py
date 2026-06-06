@@ -12,6 +12,7 @@ from v1_simulation.simulation.pipeline import default_training_time_grid
 from v1_simulation.training.bcm import BCMThetaState, update_theta
 from v1_simulation.training.plasticity import (
     bcm_training_step,
+    make_bcm_efferent_update_index,
     update_efferent_excitatory_weights,
     update_excitatory_block,
 )
@@ -95,6 +96,89 @@ class BCMPlasticityTests(unittest.TestCase):
         self.assertEqual(dense[0, 1], 0.0)
         self.assertEqual(dense[2, 1], 0.0)
         self.assertEqual(dense[0, 2], W[0, 2])
+
+    def test_dense_update_can_mutate_in_place_for_training_hot_path(self) -> None:
+        idx_E = np.array([0, 1])
+        idx_I = np.array([2])
+        W = np.array(
+            [
+                [0.5, 0.2, -0.4],
+                [0.2, 0.3, -0.1],
+                [0.7, 0.4, -0.2],
+            ],
+            dtype=float,
+        )
+        topology = W != 0.0
+        theta = BCMThetaState(E=np.array([0.01, 0.02]), I=np.array([0.03]))
+
+        updated = update_efferent_excitatory_weights(
+            W,
+            topology,
+            idx_E,
+            idx_I,
+            x_E=np.array([[1.0, 2.0], [2.0, 3.0]]),
+            y_E=np.array([[0.5, 0.6], [0.4, 0.7]]),
+            y_I=np.array([[0.7], [0.8]]),
+            theta=theta,
+            config=TrainingBCMConfig(eta=0.01, w_max=None),
+            _cached_topology=topology,
+            copy_weights=False,
+        )
+
+        self.assertIs(updated, W)
+        self.assertTrue(np.allclose(W, updated))
+
+    def test_in_place_edge_update_matches_pure_dense_update(self) -> None:
+        idx_E = np.array([0, 1])
+        idx_I = np.array([2])
+        W = np.array(
+            [
+                [0.5, 0.2, -0.4],
+                [0.2, 0.3, -0.1],
+                [0.7, 0.4, -0.2],
+            ],
+            dtype=float,
+        )
+        topology = W != 0.0
+        theta = BCMThetaState(E=np.array([0.01, 0.02]), I=np.array([0.03]))
+        config = TrainingBCMConfig(eta=0.01, w_max=1.0, row_sum_max_scale=None)
+        row_sum_max_E = np.array([0.65, 0.45])
+        row_sum_max_I = np.array([0.8])
+
+        expected = update_efferent_excitatory_weights(
+            W,
+            topology,
+            idx_E,
+            idx_I,
+            x_E=np.array([[1.0, 2.0], [2.0, 3.0]]),
+            y_E=np.array([[0.5, 0.6], [0.4, 0.7]]),
+            y_I=np.array([[0.7], [0.8]]),
+            theta=theta,
+            config=config,
+            row_sum_max_E=row_sum_max_E,
+            row_sum_max_I=row_sum_max_I,
+        )
+
+        actual_input = W.copy()
+        actual = update_efferent_excitatory_weights(
+            actual_input,
+            topology,
+            idx_E,
+            idx_I,
+            x_E=np.array([[1.0, 2.0], [2.0, 3.0]]),
+            y_E=np.array([[0.5, 0.6], [0.4, 0.7]]),
+            y_I=np.array([[0.7], [0.8]]),
+            theta=theta,
+            config=config,
+            row_sum_max_E=row_sum_max_E,
+            row_sum_max_I=row_sum_max_I,
+            _cached_topology=topology,
+            copy_weights=False,
+            update_index=make_bcm_efferent_update_index(topology, idx_E, idx_I),
+        )
+
+        self.assertIs(actual, actual_input)
+        self.assertTrue(np.allclose(actual, expected))
 
     def test_training_step_post_order_uses_old_theta_for_weights(self) -> None:
         network = _tiny_network_for_bcm()

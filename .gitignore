@@ -11,6 +11,9 @@ wheels/
 
 runs/
 /data/vanhateren_iml
+/data/.gabor_cache/
+/data/.network_cache/
+/notebook/
 
 *.npy
 *.npz
@@ -24,3 +27,4 @@ pytest_temp/
 
 # temporary ignore
 docs/
+test.ipynb

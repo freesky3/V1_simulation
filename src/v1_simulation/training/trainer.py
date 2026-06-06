@@ -10,7 +10,7 @@ from scipy import sparse
 
 from v1_simulation.network.state import NetworkState
 from v1_simulation.training.bcm import BCMThetaState, validate_bcm_config
-from v1_simulation.training.plasticity import bcm_training_step, make_bcm_row_sum_limits
+from v1_simulation.training.plasticity import bcm_training_step, make_bcm_efferent_update_index, make_bcm_row_sum_limits
 
 if TYPE_CHECKING:
     from v1_simulation.config.schema import TrainingBCMConfig
@@ -99,6 +99,15 @@ class BCMTrainer:
         # and _validate_weights_follow_topology on every batch.
         conn = network.connectivity
         self._cached_topology = conn.toarray().astype(bool) if sparse.issparse(conn) else np.asarray(conn, dtype=bool)
+        self._update_index = make_bcm_efferent_update_index(
+            self._cached_topology,
+            dense_network.idx_E,
+            dense_network.idx_I,
+        )
+        self._weight_stats_index = _TrainingWeightStatsIndex(
+            ee=_BlockWeightStatsIndex.from_update_index(self._update_index.target_E_source_E),
+            ie=_BlockWeightStatsIndex.from_update_index(self._update_index.target_I_source_E),
+        )
 
     def train_batch(
         self,
@@ -170,6 +179,8 @@ class BCMTrainer:
                     config=self.config,
                     row_sum_limits=self.row_sum_limits,
                     _cached_topology=self._cached_topology,
+                    copy_weights=False,
+                    update_index=self._update_index,
                 )
                 self.state.consecutive_bad_batches = 0
                 self.state.network = result.network
@@ -233,7 +244,7 @@ class BCMTrainer:
             dy_max=float(getattr(dynamics, "dy_max", float("nan"))),
             dy_rms=float(getattr(dynamics, "dy_rms", float("nan"))),
             skipped_bad_batch=skipped,
-            weight_stats=_training_weight_stats(self.state.network),
+            weight_stats=_training_weight_stats(self.state.network, self._weight_stats_index),
             theta_stats=_theta_stats(
                 result.theta_for_update if not skipped else self.state.theta,
                 self.config.theta_floor,
@@ -287,7 +298,33 @@ class BCMTrainer:
         return None
 
 
-def _training_weight_stats(network: NetworkState) -> dict[str, float]:
+@dataclass(frozen=True, slots=True)
+class _BlockWeightStatsIndex:
+    rows: np.ndarray
+    cols: np.ndarray
+    local_rows: np.ndarray
+    row_count: int
+
+    @classmethod
+    def from_update_index(cls, index) -> "_BlockWeightStatsIndex":
+        return cls(
+            rows=index.rows,
+            cols=index.cols,
+            local_rows=index.local_rows,
+            row_count=index.row_count,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _TrainingWeightStatsIndex:
+    ee: _BlockWeightStatsIndex
+    ie: _BlockWeightStatsIndex
+
+
+def _training_weight_stats(
+    network: NetworkState,
+    index: _TrainingWeightStatsIndex | None = None,
+) -> dict[str, float]:
     weights = network.weights
     if sparse.issparse(weights):
         weights_dense = weights.toarray()
@@ -298,6 +335,11 @@ def _training_weight_stats(network: NetworkState) -> dict[str, float]:
     idx_I = network.idx_I
 
     stats: dict[str, float] = {}
+    if index is not None:
+        stats.update(_indexed_block_stats(weights_dense, index.ee, "W_EE", "W_EE_row_sum"))
+        stats.update(_indexed_block_stats(weights_dense, index.ie, "W_IE", "W_IE_row_sum"))
+        return stats
+
     w_ee = weights_dense[np.ix_(idx_E, idx_E)]
     stats.update(_nonzero_stats(w_ee, "W_EE"))
     stats.update(_row_sum_stats(w_ee, "W_EE_row_sum"))
@@ -305,6 +347,19 @@ def _training_weight_stats(network: NetworkState) -> dict[str, float]:
     w_ie = weights_dense[np.ix_(idx_I, idx_E)]
     stats.update(_nonzero_stats(w_ie, "W_IE"))
     stats.update(_row_sum_stats(w_ie, "W_IE_row_sum"))
+    return stats
+
+
+def _indexed_block_stats(
+    weights: np.ndarray,
+    index: _BlockWeightStatsIndex,
+    weight_prefix: str,
+    row_sum_prefix: str,
+) -> dict[str, float]:
+    values = weights[index.rows, index.cols] if index.rows.size else np.array([], dtype=float)
+    row_sums = np.bincount(index.local_rows, weights=values, minlength=index.row_count)
+    stats = _nonzero_stats(values, weight_prefix)
+    stats.update(_row_sum_vector_stats(row_sums, row_sum_prefix))
     return stats
 
 
@@ -328,6 +383,11 @@ def _nonzero_stats(values, prefix: str) -> dict[str, float]:
 
 def _row_sum_stats(values, prefix: str) -> dict[str, float]:
     row_sums = _row_sums(values)
+    return _row_sum_vector_stats(row_sums, prefix)
+
+
+def _row_sum_vector_stats(row_sums, prefix: str) -> dict[str, float]:
+    row_sums = np.asarray(row_sums, dtype=float).ravel()
     if row_sums.size == 0:
         return {
             f"{prefix}_mean": 0.0,

@@ -66,12 +66,14 @@ def test_bcm_trainer_initialization_and_batch_update() -> None:
     )
 
     # 4. Train one batch
+    weight_buffer_before = trainer.state.network.weights
     log = trainer.train_batch(dynamics, epoch=0, batch_size=2, images="img1.iml")
 
     # 5. Assertions on trainer state changes
     assert trainer.state.step == 1
     assert trainer.state.samples_seen == 2
     assert trainer.state.theta is not None
+    assert trainer.state.network.weights is weight_buffer_before
     # Theta arrays should have length of E/I cells respectively
     assert trainer.state.theta.E.shape == (3,)
     assert trainer.state.theta.I.shape == (1,)
