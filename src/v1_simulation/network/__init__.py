@@ -24,7 +24,7 @@ from v1_simulation.network.empirical import (
     derive_connection_probabilities,
     derive_population_counts,
 )
-from v1_simulation.network.geometry import L2_3, L4, SheetGeometry
+from v1_simulation.network.geometry import L4Config, L23Config, SheetGeometry, L4, L2_3
 from v1_simulation.network.state import NetworkState, PopulationLayout, TrainedNetworkState, load_trained_network_state
 from v1_simulation.network.weights import (
     WeightSpec,

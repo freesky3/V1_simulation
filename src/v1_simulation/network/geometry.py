@@ -1,5 +1,19 @@
 import numpy as np
 
+@dataclass
+class L4Config:
+    n_side: int
+    region_size: float
+    z_pos: float
+    all_tuned: bool
+    N_theta: int
+
+@dataclass
+class L23Config:
+    region_size: float
+    z_pos: float
+    random_inhibitory: bool
+
 
 class SheetGeometry:
     """A 2D regular grid sheet of neurons embedded in 3D space.
@@ -16,55 +30,12 @@ class SheetGeometry:
             region_size: The physical size (width and height) of the sheet.
             z_pos: The 3D z-coordinate (depth) position of this layer.
         """
-        self.n_side = self._validate_positive_int(n_side, "n_side")
-        self.N = self.n_side * self.n_side
-        self.region_size = self._validate_positive_float(region_size, "region_size")
-        self.z_pos = float(z_pos)
+        self.n_side = n_side
+        self.n_cells = self.n_side * self.n_side
+        self.region_size = region_size
+        self.z_pos = z_pos
 
         self.coords = self._generate_grid_positions()
-
-    @property
-    def n_cells(self):
-        """Number of cells in this sheet."""
-        return self.N
-
-    @staticmethod
-    def _validate_positive_int(value, name):
-        """Validates that a value is a positive integer.
-
-        Args:
-            value: Value to validate.
-            name: Parameter name for error messages.
-
-        Returns:
-            The validated integer.
-
-        Raises:
-            ValueError: If the value is not positive.
-        """
-        value = int(value)
-        if value <= 0:
-            raise ValueError(f"{name} must be positive, got {value}.")
-        return value
-
-    @staticmethod
-    def _validate_positive_float(value, name):
-        """Validates that a value is a positive float.
-
-        Args:
-            value: Value to validate.
-            name: Parameter name for error messages.
-
-        Returns:
-            The validated float.
-
-        Raises:
-            ValueError: If the value is not positive.
-        """
-        value = float(value)
-        if value <= 0:
-            raise ValueError(f"{name} must be positive, got {value}.")
-        return value
 
     def _generate_grid_positions(self):
         """Generates the 2D grid coordinates for neurons on the sheet.
@@ -106,10 +77,6 @@ class SheetGeometry:
             delta = self._periodic_delta(delta, self.region_size)
         return np.linalg.norm(delta, axis=2)
 
-    def distance_matrix(self, periodic=True):
-        """Alias for get_distance_matrix used by the network samplers."""
-        return self.get_distance_matrix(periodic=periodic)
-
     def get_distance_to(self, other_layer, periodic=True):
         """Calculates the Euclidean distance matrix from this layer to another layer.
 
@@ -119,7 +86,7 @@ class SheetGeometry:
               layers to have matching region_sizes.
 
         Returns:
-            A 2D numpy array of shape (self.N, other_layer.N) containing pairwise distances.
+            A 2D numpy array of shape (self.n_cells, other_layer.n_cells) containing pairwise distances.
 
         Raises:
             ValueError: If periodic is True and region_sizes do not match.
@@ -138,10 +105,6 @@ class SheetGeometry:
         z_diff = self.z_pos - other_layer.z_pos
         return np.sqrt(dist_2d_sq + z_diff**2)
 
-    def distance_to(self, other_layer, periodic=True):
-        """Alias for get_distance_to used by the network samplers."""
-        return self.get_distance_to(other_layer, periodic=periodic)
-
 
 class L4(SheetGeometry):
     """Layer 4 (L4) geometry and neuron properties.
@@ -150,75 +113,30 @@ class L4(SheetGeometry):
     stimuli, and assigns preferred orientation directions.
     """
 
-    def __init__(self, cfg_l4, exp_data, rng=None):
+    def __init__(self, L4Config, exp_data, rng=None):
         """Initializes L4 layer.
 
         Args:
-            cfg_l4: Configuration object containing L4 layer settings.
+            L4Config: Configuration object containing L4 layer settings.
             exp_data: Experimental data or constraints (containing NT_X or pT_X).
             rng: Random number generator instance (defaults to np.random).
         """
-        super().__init__(cfg_l4.n_side, cfg_l4.region_size, cfg_l4.z_pos)
-        self.cfg = cfg_l4
+        super().__init__(L4Config.n_side, L4Config.region_size, L4Config.z_pos)
+        self.cfg = L4Config
         self.exp_data = exp_data
         self.rng = np.random if rng is None else rng
         self._set_neurons()
 
-    @staticmethod
-    def _bounded_count(count, total, name):
-        """Ensures that a count lies within the valid range [0, total].
-
-        Args:
-            count: Number to check.
-            total: Maximum allowed value.
-            name: Parameter name for error messages.
-
-        Returns:
-            The validated integer count.
-
-        Raises:
-            ValueError: If count is out of bounds.
-        """
-        count = int(count)
-        if count < 0 or count > total:
-            raise ValueError(f"{name} must be between 0 and {total}, got {count}.")
-        return count
-
-    def _tuned_count(self):
-        """Determines the number of tuned neurons in L4 based on experimental data.
-
-        Returns:
-            An integer count of tuned neurons.
-        """
-        if self.cfg.l4.all_tuned:
-            return self.N
-
-        if hasattr(self.exp_data, "NT_X"):
-            return self._bounded_count(self.exp_data.NT_X, self.N, "NT_X")
-
-        p_tuned = float(self.exp_data.pT_X)
-        return self._bounded_count(round(self.N * p_tuned), self.N, "NT_X")
-    
-    @property
-    def is_tuned(self):
-        """Boolean array indicating which neurons are tuned."""
-        return self.tunings == "T"
-    
-    @property
-    def preferred_orientations(self):
-        """Array of preferred orientation angles (in radians) for each neuron."""
-        return np.nan_to_num(self.pref_dirs, nan=0.0)
-
     def _set_neurons(self):
         """Sets neuron types (tuned vs untuned) and their preferred orientations."""
-        n_tuned = self._tuned_count()
+        n_tuned = self.exp_data.NT_L4
 
-        self.tunings = np.full(self.N, "U", dtype="<U1")
+        self.tunings = np.full(self.n_cells, "U", dtype="<U1")
         if n_tuned:
-            tuned_idx = self.rng.choice(self.N, size=n_tuned, replace=False)
+            tuned_idx = self.rng.choice(self.n_cells, size=n_tuned, replace=False)
             self.tunings[tuned_idx] = "T"
 
-        self.pref_dirs = np.full(self.N, np.nan, dtype=float)
+        self.pref_dirs = np.full(self.n_cells, np.nan, dtype=float)
         tuned_mask = self.tunings == "T"
         n_tuned_actual = int(np.sum(tuned_mask))
         if n_tuned_actual == 0:
@@ -229,6 +147,16 @@ class L4(SheetGeometry):
         self.rng.shuffle(pref_dirs)
         self.pref_dirs[tuned_mask] = pref_dirs
 
+    @property
+    def is_tuned(self):
+        """Boolean array indicating which neurons are tuned."""
+        return self.tunings == "T"
+    
+    @property
+    def preferred_orientations(self):
+        """Array of preferred orientation angles (in radians) for each neuron."""
+        return np.nan_to_num(self.pref_dirs, nan=0.0)
+
 
 class L2_3(SheetGeometry):
     """Layer 2/3 (L2/3) geometry and neuron properties.
@@ -237,39 +165,19 @@ class L2_3(SheetGeometry):
     neurons, arranged either randomly or uniformly on a grid.
     """
 
-    def __init__(self, cfg_l23, exp_data, rng=None):
+    def __init__(self, L23Config, exp_data, rng=None):
         """Initializes L2/3 layer.
 
         Args:
-            cfg_l23: Configuration object containing L2/3 layer settings.
+            L23Config: Configuration object containing L2/3 layer settings.
             exp_data: Experimental data containing neuron counts (e.g. N_I, N_E, l2_3_n_side).
             rng: Random number generator instance (defaults to np.random).
         """
-        super().__init__(exp_data.l2_3_n_side, cfg_l23.region_size, cfg_l23.z_pos)
-        self.cfg = cfg_l23
+        super().__init__(exp_data.l2_3_n_side, L23Config.region_size, L23Config.z_pos)
+        self.cfg = L23Config
         self.exp_data = exp_data
         self.rng = np.random if rng is None else rng
         self._set_neurons()
-
-    @staticmethod
-    def _bounded_count(count, total, name):
-        """Ensures that a count lies within the valid range [0, total].
-
-        Args:
-            count: Number to check.
-            total: Maximum allowed value.
-            name: Parameter name for error messages.
-
-        Returns:
-            The validated integer count.
-
-        Raises:
-            ValueError: If count is out of bounds.
-        """
-        count = int(count)
-        if count < 0 or count > total:
-            raise ValueError(f"{name} must be between 0 and {total}, got {count}.")
-        return count
 
     def _expected_counts(self):
         """Calculates expected counts of excitatory and inhibitory neurons in L2/3.
@@ -280,13 +188,13 @@ class L2_3(SheetGeometry):
         Raises:
             ValueError: If N_E + N_I does not equal total layer size N.
         """
-        n_i = self._bounded_count(self.exp_data.N_I, self.N, "N_I")
-        n_e = self.N - n_i
+        n_i = int(self.exp_data.N_I)
+        n_e = self.n_cells - n_i
 
         if hasattr(self.exp_data, "N_E") and int(self.exp_data.N_E) != n_e:
             raise ValueError(
                 f"N_E + N_I must match layer size. "
-                f"Got N_E={self.exp_data.N_E}, N_I={n_i}, layer N={self.N}."
+                f"Got N_E={self.exp_data.N_E}, N_I={n_i}, layer N={self.n_cells}."
             )
 
         return n_e, n_i
@@ -300,11 +208,11 @@ class L2_3(SheetGeometry):
         Returns:
             A 1D numpy array of integer indices representing selected neuron positions.
         """
-        count = self._bounded_count(count, self.N, "N_I")
+        count = self._bounded_count(count, self.n_cells, "N_I")
         if count == 0:
             return np.array([], dtype=int)
-        if count == self.N:
-            return np.arange(self.N, dtype=int)
+        if count == self.n_cells:
+            return np.arange(self.n_cells, dtype=int)
 
         n_cols = min(self.n_side, int(np.ceil(np.sqrt(count))))
         n_rows = min(self.n_side, int(np.ceil(count / n_cols)))
@@ -331,7 +239,7 @@ class L2_3(SheetGeometry):
             candidates = candidates[keep]
 
         if candidates.size < count:
-            all_indices = np.arange(self.N, dtype=int)
+            all_indices = np.arange(self.n_cells, dtype=int)
             remaining = np.setdiff1d(all_indices, candidates, assume_unique=True)
             extra = remaining[np.linspace(0, remaining.size - 1, count - candidates.size, dtype=int)]
             candidates = np.concatenate([candidates, extra])
@@ -342,9 +250,9 @@ class L2_3(SheetGeometry):
         """Sets L2/3 neuron types (E/I) and assigns their grid positions."""
         _, n_i = self._expected_counts()
 
-        self.types = np.full(self.N, "E", dtype="<U1")
+        self.types = np.full(self.n_cells, "E", dtype="<U1")
         if self.cfg.random_I:
-            inhibitory_idx = self.rng.choice(self.N, size=n_i, replace=False)
+            inhibitory_idx = self.rng.choice(self.n_cells, size=n_i, replace=False)
         else:
             inhibitory_idx = self._uniform_grid_indices(n_i)
 
