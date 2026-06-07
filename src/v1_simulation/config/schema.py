@@ -187,34 +187,7 @@ class StimulusConfig:
 # 4. Model Configuration
 # ==========================================
 
-@dataclass
-class L4Config:
-    n_side: int = 40
-    region_size: float = 2.0
-    z_pos: float = 0.0
-    all_tuned: bool = True
-    N_theta: int = 8
 
-    @property
-    def l4(self) -> "L4Config":
-        """Self-reference to support self.cfg.l4.all_tuned syntax."""
-        return self
-
-@dataclass
-class L23Config:
-    n_side: Optional[int] = None
-    region_size: float = 2.0
-    z_pos: float = 0.1
-    inhibitory_fraction: Optional[float] = None
-    random_inhibitory: bool = False
-
-    @property
-    def random_I(self) -> bool:
-        return self.random_inhibitory
-
-    @random_I.setter
-    def random_I(self, val: bool):
-        self.random_inhibitory = val
 
 @dataclass
 class LayersConfig:
@@ -485,6 +458,8 @@ class TrainingNaturalImageConfig:
     res: int = 128
     normalization: str = "log-zscore"
     clip_zscore: Optional[float] = 3.0
+    frame_scale: float = 1.0
+    frame_offset: float = 0.0
     projection_chunk_size: int = 64
 
 @dataclass
@@ -498,6 +473,7 @@ class TrainingBCMConfig:
     theta_init: Optional[float] = 1.0
     theta_floor: Optional[float] = 1.0e-3
     w_max: Optional[float] = 30.0
+    clip_initial_weights: bool = True
     row_sum_max_scale: Optional[float] = 1.05
     save_every: int = 100
     dynamic_steady_state: bool = True
@@ -505,8 +481,12 @@ class TrainingBCMConfig:
     steady_state_rel_tol: float = 1.0e-5
     steady_state_window: int = 5
     steady_state_min_tau: float = 5.0
-    rate_explosion_threshold: Optional[float] = 80.0
+    require_steady_state: bool = True
+    y_diff_max_threshold: Optional[float] = None
+    dy_max_threshold: Optional[float] = 1.0
+    rate_explosion_threshold: Optional[float] = None
     saturation_fraction_threshold: float = 0.05
+    active_rate_threshold: float = 1.0
     max_consecutive_bad_batches: int = 5
     duration_tau_e: float = 30.0
     dt_tau_i_fraction: float = 1.0 / 3.0

@@ -71,6 +71,19 @@ def test_natural_image_preprocessor_normalization() -> None:
     # Standard deviation is 0.0, so zscore returns zeros to avoid div by zero
     assert np.allclose(out_flat_z, 0.0)
 
+    # 6. Frame-level scale/offset are applied after normalization.
+    preproc_scaled = NaturalImagePreprocessor(
+        NaturalImagePreprocessConfig(
+            resolution=3,
+            normalization="maxscale",
+            frame_scale=2.0,
+            frame_offset=0.5,
+        )
+    )
+    out_scaled = preproc_scaled.transform(img, NaturalImageSample(path="dummy.iml"))
+    assert out_scaled[0, 1] == pytest.approx((2.0 / 3.0) * 2.0 + 0.5)
+    assert np.max(out_scaled) == pytest.approx(2.5)
+
     # Validation errors
     with pytest.raises(ValueError, match="Unsupported natural image"):
         preproc_bad = NaturalImagePreprocessor(
@@ -214,4 +227,3 @@ def test_gabor_projection_cache(tmp_path) -> None:
     # Verify keys and values are equal
     for s in samples:
         assert np.array_equal(res_miss[s], res_hit[s])
-

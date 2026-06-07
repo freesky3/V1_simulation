@@ -3,9 +3,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from scipy import sparse
 
-from v1_simulation.config.schema import RootConfig
+from v1_simulation.config.schema import JaxSolverConfig, RootConfig
 from v1_simulation.io.artifacts import TrainingArtifacts
 from v1_simulation.network.geometry import SheetGeometry
 from v1_simulation.network.state import NetworkState, PopulationLayout
@@ -98,6 +99,67 @@ def test_run_bcm_training_uses_schema_solver_and_writes_streamed_artifacts(tmp_p
     assert (result.run_dir / "network_final" / "weights.npz").exists()
     assert (result.run_dir / "theta_M.npz").exists()
     assert (result.run_dir / "run_config.json").exists()
+
+
+def test_run_bcm_training_keeps_dense_jax_weights_between_batches(tmp_path):
+    from v1_simulation.solvers.jax_utils import is_jax_available
+
+    if not is_jax_available():
+        pytest.skip("JAX not installed")
+
+    cfg = RootConfig()
+    cfg.mode = "train"
+    cfg.job_name = "jax_bcm_pipeline_test"
+    cfg.paths.run_root = tmp_path / "runs"
+    cfg.training.enabled = True
+    cfg.training.natural_image.dir = str(tmp_path)
+    cfg.training.bcm.epochs = 1
+    cfg.training.bcm.batch_size = 1
+    cfg.training.bcm.eta = 0.01
+    cfg.training.bcm.save_every = 1
+    cfg.solver.backend = "jax-rk4"
+    cfg.solver.method = "RK4"
+    cfg.solver.jax = JaxSolverConfig(prefer_sparse=False, dtype="float32")
+
+    network = _tiny_network()
+    samples = (
+        SimpleNamespace(path=Path("im1.iml")),
+        SimpleNamespace(path=Path("im2.iml")),
+    )
+    seen_weight_modules = []
+
+    def solver(**kwargs):
+        seen_weight_modules.append(type(kwargs["network"].weights).__module__)
+        n_batch = kwargs["n_batch"]
+        time = np.asarray(kwargs["time"], dtype=float)
+        level = float(len(seen_weight_modules))
+        return BatchODEResult(
+            exc=np.full((n_batch, network.layout.n_E), level),
+            inh=np.full((n_batch, network.layout.n_I), level + 0.5),
+            exc_trajectory=None,
+            inh_trajectory=None,
+            time=time,
+            exc_convergence=np.zeros(n_batch),
+            inh_convergence=np.zeros(n_batch),
+            steady_state_reached=True,
+            steady_state_index=time.size - 1,
+            steady_state_start_index=0,
+        )
+
+    result = run_bcm_training(
+        cfg,
+        network=network,
+        drive=_FakeDrive(network.layout.n_X),
+        sampler=_FakeSampler(samples),
+        solver=solver,
+        time=np.array([0.0, 0.01]),
+        show_progress=False,
+    )
+
+    assert result.steps == 2
+    assert all(module.startswith("jaxlib") for module in seen_weight_modules)
+    loaded = load_checkpoint(result.run_dir, "network_final")
+    assert sparse.isspmatrix_csr(loaded["weights"])
 
 
 class _FakeSampler:

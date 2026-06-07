@@ -1,0 +1,8 @@
+# @package model
+
+defaults:
+  - layers: smoke
+  - connectivity: default
+  - _self_
+
+trained_network_path: null

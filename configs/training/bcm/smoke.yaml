@@ -1,0 +1,8 @@
+# @package training.bcm
+
+epochs: 1
+batch_size: 4
+eta: 0.0
+save_every: 1
+duration_tau_e: 2.0
+

@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import csv
 import json
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from math import ceil
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +32,7 @@ from v1_simulation.cli import has_group_override
 from v1_simulation.config import RootConfig, load_config, validate_config
 from v1_simulation.io.artifacts import TrainingArtifacts, json_ready
 from v1_simulation.network.builder import build_network_state
-from v1_simulation.network.state import NetworkState
+from v1_simulation.network.state import NetworkState, load_trained_network_state
 from v1_simulation.simulation.pipeline import (
     _checkpoint_metadata,
     _count_unique_paths,
@@ -62,6 +66,11 @@ class DiagnosticsOptions:
     probe_seed: int | None = None
     job_name: str = "bcm_diagnostics"
     show_progress: bool = True
+    preload_cache: str = "batch"
+    cache_prefetch: bool = True
+    network_cache_dir: Path | None = Path("data/.network_cache")
+    use_network_cache: bool = True
+    stage_logging: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +99,63 @@ class CSVAppendLogger:
             writer.writerow({key: flat.get(key, "") for key in self._fieldnames})
 
 
+class StageLogger:
+    def __init__(self, *, enabled: bool = True) -> None:
+        self.enabled = bool(enabled)
+        self.timings: list[dict[str, Any]] = []
+
+    @contextmanager
+    def stage(self, name: str):
+        start = perf_counter()
+        if self.enabled:
+            print(f"[diagnostics] {name} ...", flush=True)
+        try:
+            yield
+        finally:
+            elapsed = perf_counter() - start
+            self.timings.append({"stage": name, "seconds": elapsed})
+            if self.enabled:
+                print(f"[diagnostics] {name} done in {elapsed:.2f}s", flush=True)
+
+    def info(self, message: str) -> None:
+        if self.enabled:
+            print(f"[diagnostics] {message}", flush=True)
+
+
+class BatchCachePrefetcher:
+    def __init__(self, natural_drive: Any, *, enabled: bool) -> None:
+        self.natural_drive = natural_drive
+        self.enabled = bool(enabled) and hasattr(natural_drive, "preload_cache")
+        self._executor: ThreadPoolExecutor | None = None
+        self._future: Future[Any] | None = None
+        if self.enabled:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gabor-cache-prefetch")
+
+    def prefetch(self, samples: Sequence[Any]) -> None:
+        if not samples or not hasattr(self.natural_drive, "preload_cache"):
+            return
+        if not self.enabled:
+            self.natural_drive.preload_cache(samples)
+            return
+        self.wait()
+        assert self._executor is not None
+        self._future = self._executor.submit(self.natural_drive.preload_cache, tuple(samples))
+
+    def wait(self) -> None:
+        if self._future is None:
+            return
+        self._future.result()
+        self._future = None
+
+    def close(self) -> None:
+        try:
+            self.wait()
+        finally:
+            if self._executor is not None:
+                self._executor.shutdown(wait=True)
+                self._executor = None
+
+
 def run_bcm_training_diagnostics(
     cfg: RootConfig,
     *,
@@ -104,80 +170,91 @@ def run_bcm_training_diagnostics(
 ) -> DiagnosticsResult:
     """Run BCM training and save per-update diagnostics without changing the main pipeline."""
 
-    validate_config(cfg)
-    if not cfg.training.enabled:
-        raise ValueError("cfg.training.enabled must be true for BCM diagnostics.")
     opts = options or DiagnosticsOptions()
-    if opts.w_max is None and cfg.training.bcm.w_max is not None:
-        opts = replace(opts, w_max=cfg.training.bcm.w_max)
-    _validate_options(opts)
+    stage_log = StageLogger(enabled=opts.stage_logging)
+    with stage_log.stage("validate config"):
+        validate_config(cfg)
+        if not cfg.training.enabled:
+            raise ValueError("cfg.training.enabled must be true for BCM diagnostics.")
+        if opts.w_max is None and cfg.training.bcm.w_max is not None:
+            opts = replace(opts, w_max=cfg.training.bcm.w_max)
+        _validate_options(opts)
 
-    run_network = network if network is not None else build_network_state(cfg)
+    with stage_log.stage("build/load network"):
+        run_network = network if network is not None else _get_or_build_network(cfg, opts, stage_log=stage_log)
+
     natural_drive = drive
     natural_sampler = sampler
-    if natural_drive is None or natural_sampler is None:
-        natural_drive, natural_sampler = build_natural_image_l4_drive(
-            cfg=cfg.training.natural_image,
-            stimulus_cfg=cfg.stimulus,
-            model_cfg=cfg.model,
-            layers_cfg=cfg.model.layers,
-            l4_layer=run_network.layout.l4,
-            l4_tunings=run_network.layout.l4_tunings,
-            l4_pref_dirs=run_network.layout.l4_pref_dirs,
-        )
+    with stage_log.stage("build natural image drive"):
+        if natural_drive is None or natural_sampler is None:
+            natural_drive, natural_sampler = build_natural_image_l4_drive(
+                cfg=cfg.training.natural_image,
+                stimulus_cfg=cfg.stimulus,
+                model_cfg=cfg.model,
+                layers_cfg=cfg.model.layers,
+                l4_layer=run_network.layout.l4,
+                l4_tunings=run_network.layout.l4_tunings,
+                l4_pref_dirs=run_network.layout.l4_pref_dirs,
+            )
+            _warn_if_unseeded_natural_images(cfg, stage_log)
 
-    time_grid = (
-        default_training_time_grid(cfg)
-        if time is None
-        else np.asarray(time, dtype=float).copy()
-    )
-    run_artifacts = artifacts or TrainingArtifacts.create(
-        Path(cfg.paths.run_root) if run_root is None else run_root,
-        job_name=opts.job_name,
-    )
+    with stage_log.stage("prepare time grid/artifacts"):
+        time_grid = (
+            default_training_time_grid(cfg)
+            if time is None
+            else np.asarray(time, dtype=float).copy()
+        )
+        run_artifacts = artifacts or TrainingArtifacts.create(
+            Path(cfg.paths.run_root) if run_root is None else run_root,
+            job_name=opts.job_name,
+        )
     diagnostics_dir = run_artifacts.run_dir / "diagnostics"
     figures_dir = diagnostics_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    solver_fn = solve_wilson_cowan_batch if solver is None else solver
-    trainer = BCMTrainer(cfg.training.bcm, run_network)
-    topology = _dense_topology(trainer.state.network.connectivity)
+    with stage_log.stage("initialize trainer"):
+        solver_fn = solve_wilson_cowan_batch if solver is None else solver
+        trainer = BCMTrainer(cfg.training.bcm, run_network)
+        topology = _dense_topology(trainer.state.network.connectivity)
 
-    probe_samples = _make_probe_samples(
-        cfg,
-        natural_sampler,
-        probe_count=opts.probe_count,
-        probe_seed=opts.probe_seed,
-    )
-    if hasattr(natural_drive, "preload_cache"):
-        natural_drive.preload_cache(probe_samples)
-    probe_drive_func = natural_drive.make_static_batch_func(probe_samples)
-    input_l4_rates = np.asarray(probe_drive_func(0.0), dtype=float)
-    np.save(diagnostics_dir / "input_l4_rate_distribution.npy", input_l4_rates)
-    _write_json(diagnostics_dir / "probe_samples.json", [_sample_json(sample) for sample in probe_samples])
-    _save_input_l4_distribution(input_l4_rates, diagnostics_dir / "input_l4_rate_distribution.png")
+    with stage_log.stage("prepare probe diagnostics"):
+        probe_samples = _make_probe_samples(
+            cfg,
+            natural_sampler,
+            probe_count=opts.probe_count,
+            probe_seed=opts.probe_seed,
+        )
+        _preload_samples(natural_drive, probe_samples, mode="probe", stage_log=stage_log, enabled=True)
+        probe_drive_func = natural_drive.make_static_batch_func(probe_samples)
+        input_l4_rates = np.asarray(probe_drive_func(0.0), dtype=float)
+        np.save(diagnostics_dir / "input_l4_rate_distribution.npy", input_l4_rates)
+        _write_json(diagnostics_dir / "probe_samples.json", [_sample_json(sample) for sample in probe_samples])
+        _save_input_l4_distribution(input_l4_rates, diagnostics_dir / "input_l4_rate_distribution.png")
 
-    save_checkpoint(run_artifacts.run_dir, "network_initial", trainer.state.network, metadata={"step": 0})
+    with stage_log.stage("save initial network checkpoint"):
+        save_checkpoint(run_artifacts.run_dir, "network_initial", trainer.state.network, metadata={"step": 0})
 
     diag_log = CSVAppendLogger(diagnostics_dir / "per_update_metrics.csv")
     history: list[dict[str, Any]] = []
     image_count = 0
 
     for epoch in range(1, int(cfg.training.bcm.epochs) + 1):
-        epoch_samples = tuple(
-            natural_sampler.make_epoch(
-                limit=cfg.training.natural_image.limit,
-                shuffle_paths=True,
-                shuffle_samples=True,
+        with stage_log.stage(f"prepare epoch {epoch} samples"):
+            epoch_samples = tuple(
+                natural_sampler.make_epoch(
+                    limit=cfg.training.natural_image.limit,
+                    shuffle_paths=True,
+                    shuffle_samples=True,
+                )
             )
-        )
-        if hasattr(natural_drive, "preload_cache"):
-            natural_drive.preload_cache(epoch_samples)
+        if opts.preload_cache == "epoch":
+            _preload_samples(natural_drive, epoch_samples, mode=f"epoch {epoch}", stage_log=stage_log, enabled=True)
         image_count += _count_unique_paths(epoch_samples)
         batch_size = int(cfg.training.bcm.batch_size)
-        n_batches = (len(epoch_samples) + batch_size - 1) // batch_size
+        batches = tuple(_iter_batches(epoch_samples, batch_size))
+        n_batches = len(batches)
         progress = tqdm(
-            _iter_batches(epoch_samples, batch_size),
+            batches,
             total=n_batches,
             desc=f"BCM diagnostics epoch {epoch}/{cfg.training.bcm.epochs}",
             unit="batch",
@@ -185,91 +262,111 @@ def run_bcm_training_diagnostics(
             disable=not opts.show_progress,
         )
 
-        for batch in progress:
-            background_trace = _make_background_trace(
-                cfg,
-                network=trainer.state.network,
-                n_batch=len(batch),
-                time=time_grid,
-                step=trainer.state.step,
-            )
-            dynamics = solver_fn(
-                network=trainer.state.network,
-                external_drive=natural_drive.make_static_batch_func(batch),
-                time=time_grid,
-                n_batch=len(batch),
-                solver_config=cfg.solver,
-                transfer_config=cfg.solver.transfer,
-                training_bcm=cfg.training.bcm,
-                background_trace=background_trace,
-                store_trajectory=False,
-                stop_at_steady_state=_steady_state_enabled(cfg),
-            )
+        prefetcher = BatchCachePrefetcher(natural_drive, enabled=opts.preload_cache == "batch" and opts.cache_prefetch)
+        try:
+            if opts.preload_cache == "batch":
+                prefetcher.prefetch(batches[0] if batches else ())
 
-            weights_before = _dense_weights(trainer.state.network.weights).copy()
-            log_row = trainer.train_batch(
-                dynamics,
-                epoch=epoch,
-                batch_size=len(batch),
-                images=_sample_paths_for_log(batch),
-            )
-            weights_after = _dense_weights(trainer.state.network.weights)
-            delta = weights_after - weights_before
-            run_artifacts.append_log(log_row)
-
-            probe_dynamics = None
-            if log_row.step % opts.probe_every == 0:
-                probe_dynamics = _run_probe_batch(
+            for batch_index, batch in enumerate(progress):
+                if opts.preload_cache == "batch":
+                    prefetcher.wait()
+                    next_index = batch_index + 1
+                    if next_index < n_batches:
+                        prefetcher.prefetch(batches[next_index])
+                    elif not opts.cache_prefetch:
+                        _preload_samples(
+                            natural_drive,
+                            batch,
+                            mode=f"batch {trainer.state.step + 1}",
+                            stage_log=stage_log,
+                            enabled=False,
+                        )
+                background_trace = _make_background_trace(
                     cfg,
                     network=trainer.state.network,
-                    probe_drive_func=probe_drive_func,
-                    probe_count=len(probe_samples),
-                    time_grid=time_grid,
-                    solver_fn=solver_fn,
+                    n_batch=len(batch),
+                    time=time_grid,
+                    step=trainer.state.step,
+                )
+                dynamics = solver_fn(
+                    network=trainer.state.network,
+                    external_drive=natural_drive.make_static_batch_func(batch),
+                    time=time_grid,
+                    n_batch=len(batch),
+                    solver_config=cfg.solver,
+                    transfer_config=cfg.solver.transfer,
+                    training_bcm=cfg.training.bcm,
+                    background_trace=background_trace,
+                    store_trajectory=False,
+                    stop_at_steady_state=_steady_state_enabled(cfg),
                 )
 
-            metrics = collect_update_metrics(
-                network=trainer.state.network,
-                topology=topology,
-                weights_after=weights_after,
-                delta=delta,
-                log_row=log_row,
-                theta=trainer.state.theta,
-                row_sum_limits=trainer.row_sum_limits,
-                probe_dynamics=probe_dynamics,
-                options=opts,
-            )
-            history.append(metrics)
-            diag_log.append(metrics)
+                weights_before = _dense_weights(trainer.state.network.weights).copy()
+                log_row = trainer.train_batch(
+                    dynamics,
+                    epoch=epoch,
+                    batch_size=len(batch),
+                    images=_sample_paths_for_log(batch),
+                )
+                weights_after = _dense_weights(trainer.state.network.weights)
+                delta = weights_after - weights_before
+                run_artifacts.append_log(log_row)
 
-            if opts.save_per_step_figures and probe_dynamics is not None:
-                _save_update_figure(
-                    figures_dir / f"update_{log_row.step:06d}.png",
+                probe_dynamics = None
+                if log_row.step % opts.probe_every == 0:
+                    probe_dynamics = _run_probe_batch(
+                        cfg,
+                        network=trainer.state.network,
+                        probe_drive_func=probe_drive_func,
+                        probe_count=len(probe_samples),
+                        time_grid=time_grid,
+                        solver_fn=solver_fn,
+                    )
+
+                metrics = collect_update_metrics(
                     network=trainer.state.network,
                     topology=topology,
                     weights_after=weights_after,
                     delta=delta,
+                    log_row=log_row,
+                    theta=trainer.state.theta,
+                    row_sum_limits=trainer.row_sum_limits,
                     probe_dynamics=probe_dynamics,
-                    history=history,
-                    metrics=metrics,
                     options=opts,
                 )
+                history.append(metrics)
+                diag_log.append(metrics)
 
-            progress.set_postfix(
-                samples=trainer.state.samples_seen,
-                aE=f"{log_row.aE_mean:.3g}",
-                aI=f"{log_row.aI_mean:.3g}",
-                cap=metrics["w_cap_status"],
-                updated=log_row.updated,
-            )
+                if opts.save_per_step_figures and probe_dynamics is not None:
+                    _save_update_figure(
+                        figures_dir / f"update_{log_row.step:06d}.png",
+                        network=trainer.state.network,
+                        topology=topology,
+                        weights_after=weights_after,
+                        delta=delta,
+                        probe_dynamics=probe_dynamics,
+                        history=history,
+                        metrics=metrics,
+                        options=opts,
+                    )
 
-            if trainer.state.step % int(cfg.training.bcm.save_every) == 0:
-                save_checkpoint(
-                    run_artifacts.run_dir,
-                    "network_latest",
-                    trainer.state.network,
-                    metadata=_checkpoint_metadata(trainer, image_count),
+                progress.set_postfix(
+                    samples=trainer.state.samples_seen,
+                    aE=f"{log_row.aE_mean:.3g}",
+                    aI=f"{log_row.aI_mean:.3g}",
+                    cap=metrics["w_cap_status"],
+                    updated=log_row.updated,
                 )
+
+                if trainer.state.step % int(cfg.training.bcm.save_every) == 0:
+                    save_checkpoint(
+                        run_artifacts.run_dir,
+                        "network_latest",
+                        trainer.state.network,
+                        metadata=_checkpoint_metadata(trainer, image_count),
+                    )
+        finally:
+            prefetcher.close()
 
     if trainer.state.theta is None:
         raise RuntimeError("BCM diagnostics did not process any natural-image samples.")
@@ -298,6 +395,7 @@ def run_bcm_training_diagnostics(
         options=opts,
         history=history,
         input_l4_rates=input_l4_rates,
+        stage_timings=stage_log.timings,
         run_dir=run_artifacts.run_dir,
         diagnostics_dir=diagnostics_dir,
         steps=trainer.state.step,
@@ -310,6 +408,7 @@ def run_bcm_training_diagnostics(
         {
             "config": asdict(cfg),
             "diagnostics": asdict(opts),
+            "stage_timings": stage_log.timings,
             "training": {
                 "batches": trainer.state.step,
                 "images": image_count,
@@ -580,6 +679,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--probe-seed", type=int, default=None)
     parser.add_argument("--run-root", type=Path, default=None)
     parser.add_argument("--job-name", default="bcm_diagnostics")
+    parser.add_argument("--preload-cache", choices=("epoch", "batch", "none"), default="batch")
+    parser.add_argument("--cache-prefetch", dest="cache_prefetch", action="store_true", default=True)
+    parser.add_argument("--no-cache-prefetch", dest="cache_prefetch", action="store_false")
+    parser.add_argument("--network-cache-dir", type=Path, default=Path("data/.network_cache"))
+    parser.add_argument("--no-network-cache", action="store_true")
+    parser.add_argument("--no-stage-log", action="store_true")
     parser.add_argument("--no-per-step-figures", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("overrides", nargs=argparse.REMAINDER)
@@ -611,6 +716,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         probe_seed=args.probe_seed,
         job_name=str(args.job_name),
         show_progress=not bool(args.no_progress),
+        preload_cache=str(args.preload_cache),
+        cache_prefetch=bool(args.cache_prefetch),
+        network_cache_dir=args.network_cache_dir,
+        use_network_cache=not bool(args.no_network_cache),
+        stage_logging=not bool(args.no_stage_log),
     )
 
     result = run_bcm_training_diagnostics(cfg, options=options)
@@ -642,6 +752,114 @@ def _run_probe_batch(
         store_trajectory=False,
         stop_at_steady_state=_steady_state_enabled(cfg),
     )
+
+
+def _get_or_build_network(
+    cfg: RootConfig,
+    options: DiagnosticsOptions,
+    *,
+    stage_log: StageLogger,
+) -> NetworkState:
+    if not options.use_network_cache or options.network_cache_dir is None:
+        return build_network_state(cfg)
+    if getattr(cfg.model, "trained_network_path", None):
+        stage_log.info("network cache skipped because model.trained_network_path is set")
+        return build_network_state(cfg)
+
+    cache_key = _network_cache_key(cfg)
+    cache_dir = Path(options.network_cache_dir) / cache_key
+    metadata_path = cache_dir / "metadata.json"
+    if metadata_path.exists():
+        try:
+            with metadata_path.open(encoding="utf-8") as f:
+                metadata = json.load(f)
+            if metadata.get("cache_key") == cache_key:
+                network = load_trained_network_state(cache_dir, model_cfg=cfg.model).network
+                network.source.update({"mode": "diagnostics_cache", "path": str(cache_dir), "cache_key": cache_key})
+                stage_log.info(f"network cache hit: {cache_dir}")
+                return network
+        except Exception as exc:
+            stage_log.info(f"network cache ignored after load failure: {exc}")
+
+    stage_log.info(f"network cache miss: {cache_dir}")
+    network = build_network_state(cfg)
+    save_checkpoint(
+        cache_dir.parent,
+        cache_dir.name,
+        network,
+        metadata={
+            "cache_key": cache_key,
+            "seed": cfg.seed,
+            "sample_data_path": str(cfg.paths.sample_data_path),
+            "model": asdict(cfg.model),
+        },
+    )
+    metadata_path = cache_dir / "metadata.json"
+    with metadata_path.open("w", encoding="utf-8") as f:
+        json.dump(
+            json_ready(
+                {
+                    "cache_key": cache_key,
+                    "seed": cfg.seed,
+                    "sample_data_path": str(cfg.paths.sample_data_path),
+                    "model": asdict(cfg.model),
+                }
+            ),
+            f,
+            indent=2,
+        )
+    stage_log.info(f"network cache saved: {cache_dir}")
+    return network
+
+
+def _network_cache_key(cfg: RootConfig) -> str:
+    payload = {
+        "seed": cfg.seed,
+        "sample_data_path": str(Path(cfg.paths.sample_data_path)),
+        "sample_data_file": _file_fingerprint(Path(cfg.paths.sample_data_path)),
+        "model": asdict(cfg.model),
+    }
+    encoded = json.dumps(json_ready(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_fingerprint(path: Path) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"exists": False, "path": str(path)}
+    return {
+        "exists": True,
+        "path": str(path),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+def _preload_samples(
+    natural_drive: Any,
+    samples: Sequence[Any],
+    *,
+    mode: str,
+    stage_log: StageLogger,
+    enabled: bool,
+) -> None:
+    if not hasattr(natural_drive, "preload_cache"):
+        return
+    if not samples:
+        return
+    if enabled:
+        with stage_log.stage(f"preload Gabor cache ({mode}, {len(samples)} samples)"):
+            natural_drive.preload_cache(samples)
+        return
+    natural_drive.preload_cache(samples)
+
+
+def _warn_if_unseeded_natural_images(cfg: RootConfig, stage_log: StageLogger) -> None:
+    if cfg.training.natural_image.seed is None:
+        stage_log.info(
+            "training.natural_image.seed is null; random crops reduce Gabor cache reuse across runs"
+        )
 
 
 def _make_probe_samples(
@@ -887,6 +1105,7 @@ def _build_summary(
     options: DiagnosticsOptions,
     history: Sequence[Mapping[str, Any]],
     input_l4_rates: NDArray[np.float64],
+    stage_timings: Sequence[Mapping[str, Any]] | None = None,
     run_dir: Path,
     diagnostics_dir: Path,
     steps: int,
@@ -913,6 +1132,11 @@ def _build_summary(
         "images_seen": int(images_seen),
         "epochs": int(cfg.training.bcm.epochs),
         "probe_count": int(options.probe_count),
+        "preload_cache": options.preload_cache,
+        "cache_prefetch": bool(options.cache_prefetch),
+        "network_cache_dir": str(options.network_cache_dir) if options.network_cache_dir is not None else None,
+        "use_network_cache": bool(options.use_network_cache),
+        "stage_timings": list(stage_timings or ()),
         "active_rate_threshold": float(options.active_rate_threshold),
         "w_max": cfg.training.bcm.w_max,
         "l4_input": {
@@ -1061,6 +1285,8 @@ def _validate_options(options: DiagnosticsOptions) -> None:
         raise ValueError("probe_count must be positive.")
     if int(options.probe_every) <= 0:
         raise ValueError("probe_every must be positive.")
+    if options.preload_cache not in {"epoch", "batch", "none"}:
+        raise ValueError("preload_cache must be one of: epoch, batch, none.")
     if float(options.active_rate_threshold) < 0.0:
         raise ValueError("active_rate_threshold must be non-negative.")
     if float(options.cap_warn_fraction) < 0.0 or float(options.cap_bad_fraction) < 0.0:

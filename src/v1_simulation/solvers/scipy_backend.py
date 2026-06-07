@@ -90,6 +90,7 @@ def solve_fixed_rk4(
         The BatchODEResult containing trajectories or summarized statistics.
     """
     y = np.zeros((layout.n_rates, n_batch), dtype=np.float64).ravel()
+    y_initial = y.copy()
     background = prepare_rk4_background(
         rhs.background_trace,
         n_exc=layout.n_exc,
@@ -199,7 +200,7 @@ def solve_fixed_rk4(
         dy_max = float(np.max(np.abs(dy)))
         dy_rms = float(np.sqrt(np.mean(dy**2)))
 
-        y_p = y_probe if y_probe is not None else y0
+        y_p = y_probe if y_probe is not None else y_initial
         if trajectory is not None:
             idx = max(0, np.searchsorted(out_time, out_time[-1] - options.diagnostics_probe_dt))
             y_p = trajectory[idx].ravel()
@@ -344,6 +345,10 @@ class _TrajectorySummary:
         steady_state_reached: bool,
         steady_state_index: int | None,
         steady_state_start_index: int | None,
+        y_diff_max: float = float("nan"),
+        y_diff_rms: float = float("nan"),
+        dy_max: float = float("nan"),
+        dy_rms: float = float("nan"),
     ) -> BatchODEResult:
         if self.count <= 0:
             raise ValueError("Cannot pack an empty trajectory summary.")
@@ -357,19 +362,23 @@ class _TrajectorySummary:
             steady_state_reached=steady_state_reached,
             steady_state_index=steady_state_index,
             steady_state_start_index=steady_state_start_index,
+            y_diff_max=y_diff_max,
+            y_diff_rms=y_diff_rms,
+            dy_max=dy_max,
+            dy_rms=dy_rms,
         )
 
 
 class _SteadyStateChecker:
     @classmethod
     def from_options(cls, options: SolverOptions, rhs) -> "_SteadyStateChecker":
-        min_time = options.steady_state_min_time
+        min_time = options.early_stop_min_time
         if min_time is None:
             min_time = 5.0 * max(float(rhs.tau_exc), float(rhs.tau_inh))
         return cls(
-            abs_tol=options.steady_state_abs_tol,
-            rel_tol=options.steady_state_rel_tol,
-            window=options.steady_state_window,
+            abs_tol=options.early_stop_f_atol,
+            rel_tol=options.early_stop_f_rtol,
+            window=options.early_stop_rk4_window,
             min_time=min_time,
         )
 

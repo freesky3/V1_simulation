@@ -28,6 +28,15 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 addopts = "--basetemp=.pytest"
+filterwarnings = [
+    "ignore::SyntaxWarning"
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "pytest>=9.0.3",
+]
 
 [project.optional-dependencies]
 jax = [

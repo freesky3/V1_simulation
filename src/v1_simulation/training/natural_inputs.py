@@ -70,6 +70,8 @@ def build_natural_image_l4_drive(
             resolution=cfg.res,
             normalization=cfg.normalization,
             clip_zscore=cfg.clip_zscore,
+            frame_scale=float(getattr(cfg, "frame_scale", 1.0)),
+            frame_offset=float(getattr(cfg, "frame_offset", 0.0)),
         )
     )
 

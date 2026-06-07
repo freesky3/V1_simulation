@@ -108,6 +108,7 @@ def test_write_analysis_result_artifacts(tmp_path) -> None:
     with (output_dir / "diagnostics.json").open("r", encoding="utf-8") as f:
         diag = json.load(f)
     assert diag["metrics_summary"]["n_neurons"] == 2
+    assert (output_dir / "spatial_surrogate_metrics.json").exists()
 
     # Check tabular summary written by write_analysis_metrics
     assert (output_dir / "summary_metrics.json").exists()

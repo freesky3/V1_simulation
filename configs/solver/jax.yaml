@@ -1,10 +1,14 @@
 # @package solver
 
+defaults:
+  - transfer: default
+  - _self_
+
 backend: jax-rk4
 method: RK4
 
 jax:
-  prefer_sparse: true
+  prefer_sparse: false
   dense_max_mb: 128.0
   dtype: float32
 

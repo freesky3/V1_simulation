@@ -241,7 +241,7 @@ def run_bcm_training(
         job_name=cfg.job_name if job_name is None else job_name,
     )
     solver_fn = solve_wilson_cowan_batch if solver is None else solver
-    trainer = BCMTrainer(cfg.training.bcm, run_network)
+    trainer = BCMTrainer(cfg.training.bcm, run_network, solver_config=cfg.solver)
 
     save_checkpoint(run_artifacts.run_dir, "network_initial", trainer.state.network, metadata={"step": 0})
 

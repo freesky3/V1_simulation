@@ -15,6 +15,7 @@ def load_analysis_inputs_from_run(
     run_dir: str | Path,
     *,
     network_path: str | Path | None = None,
+    center_side_fraction: float | None = None,
 ) -> AnalysisInputs:
     """Load ``AnalysisInputs`` from a persisted simulation run directory."""
 
@@ -33,24 +34,50 @@ def load_analysis_inputs_from_run(
 
     l23 = network.layout.l23
     exc_idx = network.idx_E
-    coords = l23.coords[exc_idx]
-    distance = l23.distance_matrix()[np.ix_(exc_idx, exc_idx)]
+    all_coords = l23.coords[exc_idx]
+    all_distance = l23.distance_matrix()[np.ix_(exc_idx, exc_idx)]
 
     run_config_path = root / "run_config.json"
-    center_side_fraction = 1.0
+    run_center_side_fraction = 1.0
     if run_config_path.exists():
         try:
             with run_config_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
-                center_side_fraction = float(meta.get("config", {}).get("analysis", {}).get("center_side_fraction", 1.0))
+                run_center_side_fraction = float(
+                    meta.get("config", {}).get("analysis", {}).get("center_side_fraction", 1.0)
+                )
         except Exception:
             pass
 
-    if center_side_fraction < 1.0:
-        half_side = (l23.region_size * center_side_fraction) / 2.0
-        in_center_E = (np.abs(coords[:, 0]) <= half_side) & (np.abs(coords[:, 1]) <= half_side)
-        coords = coords[in_center_E]
-        distance = distance[np.ix_(in_center_E, in_center_E)]
+    coords = all_coords
+    distance = all_distance
+    if run_center_side_fraction < 1.0:
+        run_mask = _center_mask(all_coords, l23.region_size, run_center_side_fraction)
+        coords = all_coords[run_mask]
+        distance = all_distance[np.ix_(run_mask, run_mask)]
+        if responses.shape[0] == all_coords.shape[0]:
+            responses = responses[run_mask]
+
+    if responses.shape[0] != coords.shape[0]:
+        raise ValueError(
+            "Saved response count does not match network coordinates after applying "
+            f"run center_side_fraction={run_center_side_fraction}: "
+            f"responses={responses.shape[0]}, coords={coords.shape[0]}."
+        )
+
+    requested_center_side_fraction = (
+        run_center_side_fraction if center_side_fraction is None else float(center_side_fraction)
+    )
+    if requested_center_side_fraction > run_center_side_fraction + 1.0e-12:
+        raise ValueError(
+            "analysis.center_side_fraction cannot exceed the center_side_fraction used when "
+            f"the simulation was saved ({run_center_side_fraction})."
+        )
+    if requested_center_side_fraction < run_center_side_fraction:
+        requested_mask = _center_mask(coords, l23.region_size, requested_center_side_fraction)
+        coords = coords[requested_mask]
+        distance = distance[np.ix_(requested_mask, requested_mask)]
+        responses = responses[requested_mask]
 
     return AnalysisInputs(
         responses=np.asarray(responses, dtype=float),
@@ -58,6 +85,11 @@ def load_analysis_inputs_from_run(
         distance=distance,
         theta_angles=np.asarray(theta_angles, dtype=float),
     )
+
+
+def _center_mask(coords: np.ndarray, region_size: float, center_side_fraction: float) -> np.ndarray:
+    half_side = (float(region_size) * float(center_side_fraction)) / 2.0
+    return (np.abs(coords[:, 0]) <= half_side) & (np.abs(coords[:, 1]) <= half_side)
 
 
 def write_analysis_result_artifacts(
@@ -96,6 +128,16 @@ def write_analysis_result_artifacts(
     rows = diagnostics.get("ensemble_metrics", [])
     if isinstance(summary, dict) and isinstance(rows, list):
         write_analysis_metrics(summary, rows, target)
+
+    if result.communities is not None:
+        from v1_simulation.analysis.plotting import spatial_surrogate_summary
+
+        with (target / "spatial_surrogate_metrics.json").open("w", encoding="utf-8") as f:
+            json.dump(
+                json_ready(spatial_surrogate_summary(result, num_surrogates=num_surrogates, rng_seed=42)),
+                f,
+                indent=2,
+            )
 
     if save_plots:
         from v1_simulation.analysis.plotting import generate_and_save_all_analysis_plots

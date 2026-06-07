@@ -1,5 +1,9 @@
 # @package solver
 
+defaults:
+  - transfer: default
+  - _self_
+
 backend: diffrax
 method: adaptive
 

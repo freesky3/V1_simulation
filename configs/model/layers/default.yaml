@@ -1,0 +1,15 @@
+# @package model.layers
+
+periodic: true
+N_theta: 8
+l4:
+  n_side: 40
+  region_size: 2.0
+  z_pos: 0.0
+  all_tuned: true
+  N_theta: 8
+l23:
+  region_size: 2.0
+  z_pos: 0.1
+  random_inhibitory: false
+

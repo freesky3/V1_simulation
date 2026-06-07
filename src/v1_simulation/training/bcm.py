@@ -58,6 +58,8 @@ def validate_bcm_config(config: TrainingBCMConfig, *, include_loop_fields: bool 
     _validate_optional_positive(config.theta_init, "training.bcm.theta_init")
     _validate_optional_positive(config.theta_floor, "training.bcm.theta_floor")
     _validate_optional_positive(config.w_max, "training.bcm.w_max")
+    if not isinstance(config.clip_initial_weights, bool):
+        raise ValueError("training.bcm.clip_initial_weights must be a boolean.")
 
     row_sum_max_scale = _optional_finite_float(config.row_sum_max_scale, "training.bcm.row_sum_max_scale")
     if row_sum_max_scale is not None and row_sum_max_scale < 0.0:
@@ -81,6 +83,16 @@ def validate_bcm_config(config: TrainingBCMConfig, *, include_loop_fields: bool 
         raise ValueError("training.bcm.steady_state_window must be positive.")
     if _finite_float(config.steady_state_min_tau, "training.bcm.steady_state_min_tau") < 0.0:
         raise ValueError("training.bcm.steady_state_min_tau must be non-negative.")
+    _validate_optional_positive(config.y_diff_max_threshold, "training.bcm.y_diff_max_threshold")
+    _validate_optional_positive(config.dy_max_threshold, "training.bcm.dy_max_threshold")
+    _validate_optional_positive(config.rate_explosion_threshold, "training.bcm.rate_explosion_threshold")
+    sat_fraction = _finite_float(config.saturation_fraction_threshold, "training.bcm.saturation_fraction_threshold")
+    if sat_fraction < 0.0 or sat_fraction > 1.0:
+        raise ValueError("training.bcm.saturation_fraction_threshold must be in [0.0, 1.0].")
+    if _finite_float(config.active_rate_threshold, "training.bcm.active_rate_threshold") < 0.0:
+        raise ValueError("training.bcm.active_rate_threshold must be non-negative.")
+    if int(config.max_consecutive_bad_batches) <= 0:
+        raise ValueError("training.bcm.max_consecutive_bad_batches must be positive.")
 
 
 def initialize_theta(

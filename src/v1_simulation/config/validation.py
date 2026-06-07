@@ -339,6 +339,10 @@ def validate_config(cfg: RootConfig) -> None:
             raise ValueError(f"training.natural_image.normalization is unsupported: {img.normalization}")
         if img.clip_zscore is not None and img.clip_zscore <= 0:
             raise ValueError(f"training.natural_image.clip_zscore must be positive, got {img.clip_zscore}")
+        frame_scale = _finite_float(img.frame_scale, "training.natural_image.frame_scale")
+        if frame_scale < 0.0:
+            raise ValueError(f"training.natural_image.frame_scale must be non-negative, got {img.frame_scale}")
+        _finite_float(img.frame_offset, "training.natural_image.frame_offset")
         if img.projection_chunk_size <= 0:
             raise ValueError(
                 f"training.natural_image.projection_chunk_size must be positive, got {img.projection_chunk_size}"
@@ -369,6 +373,7 @@ def validate_config(cfg: RootConfig) -> None:
         w_max = _optional_finite_float(bcm.w_max, "training.bcm.w_max")
         if w_max is not None and w_max <= 0.0:
             raise ValueError(f"training.bcm.w_max must be positive, got {bcm.w_max}")
+        _require_bool(bcm.clip_initial_weights, "training.bcm.clip_initial_weights")
         row_sum_scale = _optional_finite_float(bcm.row_sum_max_scale, "training.bcm.row_sum_max_scale")
         if row_sum_scale is not None and row_sum_scale < 0.0:
             raise ValueError(
@@ -390,6 +395,18 @@ def validate_config(cfg: RootConfig) -> None:
             raise ValueError(
                 f"training.bcm.steady_state_min_tau must be non-negative, got {bcm.steady_state_min_tau}"
             )
+        _require_bool(bcm.require_steady_state, "training.bcm.require_steady_state")
+        y_diff_max = _optional_finite_float(bcm.y_diff_max_threshold, "training.bcm.y_diff_max_threshold")
+        if y_diff_max is not None and y_diff_max <= 0.0:
+            raise ValueError(
+                "training.bcm.y_diff_max_threshold must be positive when set, "
+                f"got {bcm.y_diff_max_threshold}"
+            )
+        dy_max = _optional_finite_float(bcm.dy_max_threshold, "training.bcm.dy_max_threshold")
+        if dy_max is not None and dy_max <= 0.0:
+            raise ValueError(
+                f"training.bcm.dy_max_threshold must be positive when set, got {bcm.dy_max_threshold}"
+            )
         rate_exp = _optional_finite_float(bcm.rate_explosion_threshold, "training.bcm.rate_explosion_threshold")
         if rate_exp is not None and rate_exp <= 0.0:
             raise ValueError(
@@ -399,6 +416,11 @@ def validate_config(cfg: RootConfig) -> None:
         if sat_frac < 0.0 or sat_frac > 1.0:
             raise ValueError(
                 f"training.bcm.saturation_fraction_threshold must be in [0.0, 1.0], got {bcm.saturation_fraction_threshold}"
+            )
+        active_rate = _finite_float(bcm.active_rate_threshold, "training.bcm.active_rate_threshold")
+        if active_rate < 0.0:
+            raise ValueError(
+                f"training.bcm.active_rate_threshold must be non-negative, got {bcm.active_rate_threshold}"
             )
         if bcm.max_consecutive_bad_batches <= 0:
             raise ValueError(

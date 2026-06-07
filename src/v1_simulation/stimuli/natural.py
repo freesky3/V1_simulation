@@ -26,12 +26,16 @@ class NaturalImagePreprocessConfig:
         resolution: Target resolution (height and width) of the preprocessed image.
         normalization: Normalization strategy to apply ("log-zscore", "zscore", or "maxscale").
         clip_zscore: Optional value to clip extreme z-score values.
+        frame_scale: Multiplicative factor applied after normalization and clipping.
+        frame_offset: Additive offset applied after normalization, clipping, and scaling.
         antialias: If True, applies Gaussian filtering to prevent aliasing before downsampling.
         zscore_eps: A small constant to prevent division by zero during normalization.
     """
     resolution: int
     normalization: NormalizationMode = "log-zscore"
     clip_zscore: float | None = 3.0
+    frame_scale: float = 1.0
+    frame_offset: float = 0.0
     antialias: bool = True
     zscore_eps: float = 1e-8
 
@@ -40,6 +44,10 @@ class NaturalImagePreprocessConfig:
             raise ValueError("resolution must be greater than 1.")
         if self.clip_zscore is not None and self.clip_zscore <= 0:
             raise ValueError("clip_zscore must be positive when provided.")
+        if not np.isfinite(float(self.frame_scale)) or float(self.frame_scale) < 0.0:
+            raise ValueError("frame_scale must be finite and non-negative.")
+        if not np.isfinite(float(self.frame_offset)):
+            raise ValueError("frame_offset must be finite.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +93,7 @@ class NaturalImagePreprocessor:
         image = apply_crop(np.asarray(image), sample.crop)
         image = self._resize(np.asarray(image, dtype=float))
         image = self._normalize(image)
+        image = image * float(self.cfg.frame_scale) + float(self.cfg.frame_offset)
         return image.astype(float, copy=False)
 
     def _resize(self, image: NDArray[np.float64]) -> NDArray[np.float64]:

@@ -22,11 +22,15 @@ sys.modules[_SPEC.name] = diag
 _SPEC.loader.exec_module(diag)
 
 DiagnosticsOptions = diag.DiagnosticsOptions
+StageLogger = diag.StageLogger
+BatchCachePrefetcher = diag.BatchCachePrefetcher
 active_rate_stats = diag.active_rate_stats
 cap_fraction = diag.cap_fraction
 collect_update_metrics = diag.collect_update_metrics
 connected_block_values = diag.connected_block_values
 run_bcm_training_diagnostics = diag.run_bcm_training_diagnostics
+_get_or_build_network = diag._get_or_build_network
+_network_cache_key = diag._network_cache_key
 
 
 def test_active_rate_stats_filters_small_rates() -> None:
@@ -112,6 +116,7 @@ def test_run_bcm_training_diagnostics_smoke_generates_artifacts(tmp_path) -> Non
             probe_every=1,
             w_max=cfg.training.bcm.w_max,
             show_progress=False,
+            stage_logging=False,
         ),
         network=network,
         drive=drive,
@@ -131,6 +136,99 @@ def test_run_bcm_training_diagnostics_smoke_generates_artifacts(tmp_path) -> Non
     assert rows[0]["updated"] == "0"
     assert rows[1]["updated"] == "1"
     assert len(calls) == 4  # two training batches plus two fixed-probe batches
+    assert [len(samples) for samples in drive.preload_calls] == [2, 1, 1]
+
+
+def test_preload_cache_epoch_mode_preloads_epoch_before_batches(tmp_path) -> None:
+    cfg = _test_cfg()
+    cfg.paths.run_root = tmp_path / "runs"
+    network = _tiny_network()
+    samples = (
+        SimpleNamespace(path=Path("im1.iml"), crop=None),
+        SimpleNamespace(path=Path("im2.iml"), crop=None),
+    )
+    drive = _FakeDrive(network.layout.n_X)
+
+    result = run_bcm_training_diagnostics(
+        cfg,
+        options=DiagnosticsOptions(
+            probe_count=2,
+            probe_every=99,
+            save_per_step_figures=False,
+            w_max=cfg.training.bcm.w_max,
+            show_progress=False,
+            preload_cache="epoch",
+            stage_logging=False,
+        ),
+        network=network,
+        drive=drive,
+        sampler=_FakeSampler(samples),
+        solver=lambda **kwargs: _fake_dynamics(
+            n_batch=kwargs["n_batch"],
+            n_e=network.layout.n_E,
+            n_i=network.layout.n_I,
+            level=1.0,
+            time=np.asarray(kwargs["time"], dtype=float),
+        ),
+        time=np.array([0.0, 0.01]),
+    )
+
+    assert result.steps == 2
+    assert [len(samples) for samples in drive.preload_calls] == [2, 2]
+
+
+def test_network_cache_key_changes_with_model_config() -> None:
+    cfg = _test_cfg()
+    first = _network_cache_key(cfg)
+
+    cfg.model.connectivity.j = float(cfg.model.connectivity.j) + 0.1
+    second = _network_cache_key(cfg)
+
+    assert first != second
+
+
+def test_get_or_build_network_reuses_cache(tmp_path, monkeypatch) -> None:
+    cfg = _test_cfg()
+    cfg.paths.sample_data_path = tmp_path / "sample_data.pkl"
+    cfg.training.natural_image.dir = "unused"
+    options = DiagnosticsOptions(
+        network_cache_dir=tmp_path / "network_cache",
+        use_network_cache=True,
+        stage_logging=False,
+    )
+    calls = []
+    network = _tiny_network()
+
+    def fake_build_network_state(build_cfg):
+        calls.append(build_cfg)
+        return network
+
+    monkeypatch.setattr(diag, "build_network_state", fake_build_network_state)
+    stage_log = StageLogger(enabled=False)
+
+    first = _get_or_build_network(cfg, options, stage_log=stage_log)
+    second = _get_or_build_network(cfg, options, stage_log=stage_log)
+
+    assert first.layout.n_E == network.layout.n_E
+    assert second.layout.n_E == network.layout.n_E
+    assert len(calls) == 1
+    assert second.source["mode"] == "diagnostics_cache"
+
+
+def test_batch_cache_prefetcher_preloads_samples() -> None:
+    drive = _FakeDrive(1)
+    samples1 = (SimpleNamespace(path=Path("im1.iml")),)
+    samples2 = (SimpleNamespace(path=Path("im2.iml")),)
+
+    prefetcher = BatchCachePrefetcher(drive, enabled=True)
+    try:
+        prefetcher.prefetch(samples1)
+        prefetcher.wait()
+        prefetcher.prefetch(samples2)
+    finally:
+        prefetcher.close()
+
+    assert drive.preload_calls == [samples1, samples2]
 
 
 class _FakeSampler:
@@ -145,6 +243,10 @@ class _FakeSampler:
 class _FakeDrive:
     def __init__(self, n_ext):
         self.n_ext = n_ext
+        self.preload_calls = []
+
+    def preload_cache(self, samples):
+        self.preload_calls.append(tuple(samples))
 
     def make_static_batch_func(self, samples):
         n_batch = len(samples)

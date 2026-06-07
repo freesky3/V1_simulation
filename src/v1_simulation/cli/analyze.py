@@ -57,7 +57,11 @@ def analyze_command(
     if plots is not None:
         cfg.analysis.save_plots = plots
 
-    inputs = load_analysis_inputs_from_run(run_dir, network_path=network_path)
+    inputs = load_analysis_inputs_from_run(
+        run_dir,
+        network_path=network_path,
+        center_side_fraction=cfg.analysis.center_side_fraction,
+    )
     result = run_analysis(cfg.analysis, inputs)
     target = write_analysis_result_artifacts(
         result,

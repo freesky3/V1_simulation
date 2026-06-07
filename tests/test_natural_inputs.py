@@ -69,6 +69,8 @@ def test_build_natural_image_l4_drive_pipeline(tmp_path) -> None:
         res=64,
         normalization="log-zscore",
         clip_zscore=3.0,
+        frame_scale=0.5,
+        frame_offset=0.25,
         projection_chunk_size=32,
     )
     stimulus_cfg = SimpleNamespace(
@@ -94,5 +96,7 @@ def test_build_natural_image_l4_drive_pipeline(tmp_path) -> None:
 
     assert sampler.crop_size == 256
     assert drive.preprocessor.cfg.resolution == 64
+    assert drive.preprocessor.cfg.frame_scale == 0.5
+    assert drive.preprocessor.cfg.frame_offset == 0.25
     assert drive.projector.drive_cfg.periodic is False
     assert drive.projector.drive_cfg.projection_chunk_size == 32

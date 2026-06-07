@@ -110,6 +110,10 @@ class NetworkState:
         # round trips during training loops.
         if sparse.issparse(self.weights):
             weights = sparse.csr_matrix(self.weights, dtype=float)
+        elif _is_jax_array(self.weights):
+            weights = self.weights
+            if getattr(weights, "ndim", None) != 2:
+                raise ValueError("weights must be a 2D matrix.")
         else:
             weights = np.asarray(self.weights, dtype=float)
             if weights.ndim != 2:
@@ -142,7 +146,9 @@ class NetworkState:
 
     @property
     def QJ_ij(self) -> sparse.csr_matrix:
-        return self.weights
+        if sparse.issparse(self.weights):
+            return self.weights
+        return sparse.csr_matrix(np.asarray(self.weights, dtype=float))
 
     @property
     def Q(self) -> NDArray[np.float64]:
@@ -150,7 +156,9 @@ class NetworkState:
 
     @property
     def J_ij(self) -> NDArray[np.float64]:
-        return self.weights.toarray()
+        if sparse.issparse(self.weights):
+            return self.weights.toarray()
+        return np.asarray(self.weights, dtype=float)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +171,9 @@ class TrainedNetworkState:
 
     @property
     def weights(self) -> NDArray[np.float64]:
-        return self.network.weights.toarray()
+        if sparse.issparse(self.network.weights):
+            return self.network.weights.toarray()
+        return np.asarray(self.network.weights, dtype=float)
 
     @property
     def l4_tunings(self) -> NDArray[np.str_]:
@@ -410,3 +420,8 @@ def _cfg_value(cfg: Any, key: str, default: float) -> float:
     if isinstance(cfg, Mapping):
         return float(cfg.get(key, default))
     return float(getattr(cfg, key, default))
+
+
+def _is_jax_array(value: object) -> bool:
+    module = type(value).__module__
+    return module.startswith("jax") or module.startswith("jaxlib")

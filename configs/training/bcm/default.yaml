@@ -1,0 +1,28 @@
+# @package training.bcm
+
+epochs: 1
+batch_size: 128
+eta: 3.0e-5
+theta_beta: 0.01
+theta_eps: 1.0e-6
+theta_update_order: pre
+theta_init: 1.0
+theta_floor: 1.0e-3
+w_max: 30.0
+clip_initial_weights: true
+row_sum_max_scale: 1.0
+save_every: 100
+dynamic_steady_state: true
+steady_state_abs_tol: 1.0e-3
+steady_state_rel_tol: 1.0e-5
+steady_state_window: 5
+steady_state_min_tau: 5.0
+require_steady_state: true
+y_diff_max_threshold: null
+dy_max_threshold: 1.0
+rate_explosion_threshold: null
+saturation_fraction_threshold: 0.05
+active_rate_threshold: 1.0
+max_consecutive_bad_batches: 5
+duration_tau_e: 30.0
+dt_tau_i_fraction: 0.3333333333333333

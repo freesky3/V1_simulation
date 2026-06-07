@@ -44,8 +44,11 @@ class WilsonCowanRHS:
         tau_inh: float,
         n_batch: int,
         background_trace: BackgroundTrace | None = None,
+        keep_dense_weights: bool = False,
     ) -> None:
-        self.weights = weights.tocsr(copy=False) if sparse.issparse(weights) else sparse.csr_matrix(weights)
+        self.weights = weights if keep_dense_weights and not sparse.issparse(weights) else (
+            weights.tocsr(copy=False) if sparse.issparse(weights) else sparse.csr_matrix(weights)
+        )
         self.layout = layout
         self.phi_exc = phi_exc
         self.phi_inh = phi_inh
@@ -229,6 +232,7 @@ def solve_wilson_cowan_batch(
         tau_inh=transfer_cfg.tau_i,
         n_batch=n_batch,
         background_trace=background_trace,
+        keep_dense_weights=run_options.backend in {"jax-rk4", "diffrax"} and not run_options.jax_prefer_sparse,
     )
 
     if run_options.backend == "scipy":

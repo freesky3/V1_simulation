@@ -1,0 +1,13 @@
+# @package training.natural_image
+
+dir: ${paths.natural_image_dir}
+limit: null
+seed: null
+crop_size: 512
+patches_per_image: 4
+res: 128
+normalization: log-zscore
+clip_zscore: 3.0
+frame_scale: 0.05
+frame_offset: 1.0
+projection_chunk_size: 64

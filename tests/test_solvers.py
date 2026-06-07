@@ -138,6 +138,52 @@ class WilsonCowanSolverTests(unittest.TestCase):
         self.assertTrue(np.all(result.exc[1] > result.exc[0]))
         self.assertTrue(np.all(result.exc_convergence >= 0.0))
 
+    def test_scipy_rk4_early_stop_uses_solver_option_fields(self) -> None:
+        network = _tiny_network()
+        time = np.linspace(0.0, 0.1, 51)
+        solver_config = SolverConfig(backend="scipy", method="RK4")
+        solver_config.early_stop.min_time = 0.0
+        solver_config.early_stop.min_steps = 1
+        solver_config.early_stop.rk4_window = 1
+
+        result = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[0.0]]),
+            time=time,
+            n_batch=1,
+            solver_config=solver_config,
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=lambda x: np.maximum(x, 0.0),
+            phi_inh=lambda x: np.maximum(x, 0.0),
+            store_trajectory=False,
+            stop_at_steady_state=True,
+        )
+
+        self.assertTrue(result.steady_state_reached)
+        self.assertGreaterEqual(result.steady_state_index, 0)
+
+    def test_scipy_rk4_summary_diagnostics_fallback_uses_initial_state(self) -> None:
+        network = _tiny_network()
+        time = np.linspace(0.0, 0.05, 11)
+        solver_config = SolverConfig(backend="scipy", method="RK4")
+        solver_config.diagnostics.probe_dt = 0.0
+
+        result = solve_wilson_cowan_batch(
+            network=network,
+            external_drive=lambda _t: np.array([[1.0]]),
+            time=time,
+            n_batch=1,
+            solver_config=solver_config,
+            transfer_config=TransferConfig(tau_e=0.02, tau_i=0.01),
+            phi_exc=lambda x: np.maximum(x, 0.0),
+            phi_inh=lambda x: np.maximum(x, 0.0),
+            store_trajectory=False,
+        )
+
+        self.assertIsNone(result.exc_trajectory)
+        self.assertTrue(np.isfinite(result.y_diff_max))
+        self.assertTrue(np.isfinite(result.dy_max))
+
     def test_scipy_solve_ivp_failure_raises_runtime_error(self) -> None:
         network = _tiny_network()
         layout = NetworkLayout.from_network_state(network)

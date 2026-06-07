@@ -102,19 +102,30 @@ class GaborProjectionCache:
                 # Fallback to building if loading fails
                 pass
 
-        # Build projections
+        # Build projections. Samples are sorted by image path, so reading the
+        # current image once is enough without retaining the whole epoch in RAM.
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        rates_list = []
-        image_cache = {}
-        
+
+        chunk_size = _projection_chunk_size()
+        rate_chunks = []
+        frame_chunk = []
+        current_path = None
+        current_image = None
+
         for sample in unique_samples_sorted:
-            if sample.path not in image_cache:
-                image_cache[sample.path] = dataset.read(sample.path)
-            frame = preprocessor.transform(image_cache[sample.path], sample)
-            rates_list.append(projector.project(frame))
-            
-        rates_array = np.stack(rates_list)
+            if sample.path != current_path:
+                current_path = sample.path
+                current_image = dataset.read(sample.path)
+            frame = preprocessor.transform(current_image, sample)
+            frame_chunk.append(frame)
+            if len(frame_chunk) >= chunk_size:
+                rate_chunks.append(_project_frame_chunk(projector, frame_chunk))
+                frame_chunk = []
+
+        if frame_chunk:
+            rate_chunks.append(_project_frame_chunk(projector, frame_chunk))
+
+        rates_array = np.concatenate(rate_chunks, axis=0) if rate_chunks else np.empty((0, int(projector.l4.N)))
         
         # Save to disk
         np.save(npy_path, rates_array)
@@ -142,3 +153,37 @@ class GaborProjectionCache:
             
         sample_map = {s: rates_array[i] for i, s in enumerate(unique_samples_sorted)}
         return sample_map
+
+
+def _projection_chunk_size() -> int:
+    raw = os.environ.get("V1_GABOR_CACHE_CHUNK_SIZE", "64")
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 64
+    return max(1, value)
+
+
+def _project_frame_chunk(projector: L4NaturalImageProjector, frames: Sequence[np.ndarray]) -> np.ndarray:
+    if not frames:
+        return np.empty((0, int(projector.l4.N)))
+
+    first = np.asarray(frames[0], dtype=float)
+    if first.ndim != 2:
+        raise ValueError("cached natural-image frames must be two-dimensional.")
+
+    H, W = first.shape
+    matrix = projector._get_projection_matrix(H, W)
+    flattened = np.empty((len(frames), H * W), dtype=float)
+    flattened[0] = first.ravel()
+    for index, frame in enumerate(frames[1:], start=1):
+        arr = np.asarray(frame, dtype=float)
+        if arr.shape != (H, W):
+            raise ValueError("all cached natural-image frames in a chunk must share the same shape.")
+        flattened[index] = arr.ravel()
+
+    integrals = flattened @ matrix.T
+    return (
+        np.maximum(0.0, float(projector.drive_cfg.baseline_rate) + integrals)
+        * float(projector.drive_cfg.visual_gain)
+    )

@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - override /training: bcm_natural_image
+  - override /model/connectivity: bcm_stable
+  - override /solver/transfer: rate_capped
+  - _self_
+
+seed: 42
+job_name: bcm_train_g525_recommended
+mode: train
+
+model:
+  connectivity:
+    g: 5.25
+
+training:
+  bcm:
+    eta: 3.0e-4
+    save_every: 10
+  natural_image:
+    frame_scale: 0.05
+    frame_offset: 1.0
+    seed: 42

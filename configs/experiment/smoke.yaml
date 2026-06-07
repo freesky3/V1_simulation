@@ -1,17 +1,13 @@
 # @package _global_
 
+defaults:
+  - override /model: small
+  - override /training: disabled
+  - _self_
+
 seed: 42
 job_name: smoke
 mode: simulate
-
-model:
-  layers:
-    periodic: true
-    l4:
-      n_side: 8
-      all_tuned: true
-    l23:
-      random_inhibitory: false
 
 stimulus:
   kind: drifting_grating

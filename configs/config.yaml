@@ -9,6 +9,7 @@ defaults:
   - stimulus: drifting_grating
   - sweep: local_grid
   - transfer: siegert
+  - training: disabled
   - _self_
 
 seed: 42

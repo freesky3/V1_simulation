@@ -1,0 +1,18 @@
+# @package model.connectivity
+
+p_ee: 0.10
+j: 3.0
+g: 6.0
+equalize_indegree: true
+scales:
+  ee: 0.9
+  ei: 1.12
+  ex: 1.0
+  ie: 1.0
+  ii: 1.0
+  ix: 1.0
+kernel:
+  sigma_narrow: 0.075
+  sigma_broad: 0.225
+  kappa: 0.45
+

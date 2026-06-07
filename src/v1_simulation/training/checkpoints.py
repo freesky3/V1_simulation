@@ -37,7 +37,7 @@ def save_checkpoint(
     checkpoint_dir = Path(run_dir) / name
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    weights = sparse.csr_matrix(network.weights) if not sparse.issparse(network.weights) else network.weights.tocsr()
+    weights = sparse.csr_matrix(np.asarray(network.weights)) if not sparse.issparse(network.weights) else network.weights.tocsr()
     sparse.save_npz(checkpoint_dir / "weights.npz", weights)
     sparse.save_npz(checkpoint_dir / "connectivity.npz", network.connectivity.tocsr())
     np.savez_compressed(checkpoint_dir / "layout.npz", **_layout_arrays(network))

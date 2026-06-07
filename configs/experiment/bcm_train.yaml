@@ -1,49 +1,11 @@
 # @package _global_
 
+defaults:
+  - override /training: bcm_natural_image
+  - override /model/connectivity: bcm_stable
+  - override /solver/transfer: rate_capped
+  - _self_
+
 seed: 42
 job_name: bcm_train
 mode: train
-
-model:
-  connectivity:
-    j: 1.9
-    g: 6.0
-
-solver:
-  transfer:
-    rate_max: 100.0
-
-training:
-  enabled: true
-  natural_image:
-    dir: ${paths.natural_image_dir}
-    limit: null
-    seed: null
-    crop_size: 512
-    patches_per_image: 4
-    res: 128
-    normalization: log-zscore
-    clip_zscore: 3.0
-    projection_chunk_size: 64
-  bcm:
-    epochs: 1
-    batch_size: 128
-    eta: 3.0e-5
-    theta_beta: 0.01
-    theta_eps: 1.0e-6
-    theta_update_order: pre
-    theta_init: 1.0
-    theta_floor: 1.0e-3
-    w_max: 30.0
-    row_sum_max_scale: 1.0
-    save_every: 100
-    dynamic_steady_state: true
-    steady_state_abs_tol: 1.0e-3
-    steady_state_rel_tol: 1.0e-5
-    steady_state_window: 5
-    steady_state_min_tau: 5.0
-    rate_explosion_threshold: 80.0
-    saturation_fraction_threshold: 0.05
-    max_consecutive_bad_batches: 5
-    duration_tau_e: 30.0
-    dt_tau_i_fraction: 0.3333333333333333

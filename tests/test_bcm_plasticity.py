@@ -11,6 +11,7 @@ from v1_simulation.network.state import NetworkState, PopulationLayout
 from v1_simulation.simulation.pipeline import default_training_time_grid
 from v1_simulation.training.bcm import BCMThetaState, update_theta
 from v1_simulation.training.plasticity import (
+    BCMRowSumLimits,
     bcm_training_step,
     make_bcm_efferent_update_index,
     update_efferent_excitatory_weights,
@@ -179,6 +180,75 @@ class BCMPlasticityTests(unittest.TestCase):
 
         self.assertIs(actual, actual_input)
         self.assertTrue(np.allclose(actual, expected))
+
+    def test_jax_bcm_training_step_matches_numpy_edge_update(self) -> None:
+        from v1_simulation.solvers.jax_utils import is_jax_available
+
+        if not is_jax_available():
+            self.skipTest("JAX not installed")
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+        from v1_simulation.training.jax_bcm import JAXBCMUpdater
+
+        network = _tiny_network_for_bcm()
+        topology = network.connectivity.toarray().astype(bool)
+        update_index = make_bcm_efferent_update_index(topology, network.idx_E, network.idx_I)
+        limits = BCMRowSumLimits(
+            target_E_source_E=np.array([0.8, 0.75]),
+            target_I_source_E=np.array([0.9, 0.85]),
+        )
+        theta = BCMThetaState(E=np.array([0.01, 0.02]), I=np.array([0.03, 0.04]))
+        config = TrainingBCMConfig(
+            eta=0.01,
+            theta_beta=0.5,
+            theta_update_order="pre",
+            theta_floor=0.001,
+            w_max=1.0,
+        )
+        x_E = np.array([[1.0, 2.0], [2.0, 3.0]])
+        y_E = np.array([[0.5, 0.6], [0.4, 0.7]])
+        y_I = np.array([[0.7, 0.8], [0.8, 0.9]])
+
+        numpy_network = NetworkState(
+            layout=network.layout,
+            connectivity=network.connectivity,
+            weights=network.weights.toarray(),
+            source=network.source,
+        )
+        expected = bcm_training_step(
+            network=numpy_network,
+            x_E=x_E,
+            y_E=y_E,
+            y_I=y_I,
+            theta=theta,
+            config=config,
+            row_sum_limits=limits,
+            _cached_topology=topology,
+            copy_weights=False,
+            update_index=update_index,
+        )
+
+        updater = JAXBCMUpdater(
+            config=config,
+            row_sum_limits=limits,
+            update_index=update_index,
+            dtype="float64",
+        )
+        actual = updater.training_step(
+            network=updater.to_device_network(network),
+            x_E=x_E,
+            y_E=y_E,
+            y_I=y_I,
+            theta=theta,
+        )
+
+        self.assertTrue(actual.updated)
+        self.assertTrue(np.allclose(np.asarray(actual.network.weights), expected.network.weights))
+        self.assertTrue(np.allclose(actual.theta.E, expected.theta.E))
+        self.assertTrue(np.allclose(actual.theta.I, expected.theta.I))
+        self.assertTrue(np.allclose(actual.theta_for_update.E, expected.theta_for_update.E))
+        self.assertTrue(np.allclose(actual.theta_for_update.I, expected.theta_for_update.I))
 
     def test_training_step_post_order_uses_old_theta_for_weights(self) -> None:
         network = _tiny_network_for_bcm()

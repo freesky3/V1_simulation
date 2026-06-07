@@ -1,0 +1,9 @@
+# @package training
+
+defaults:
+  - natural_image: vanhateren
+  - bcm: default
+  - _self_
+
+enabled: true
+

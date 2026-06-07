@@ -263,6 +263,162 @@ def prepare_spatial_surrogate_plot_data(
     }
 
 
+def spatial_surrogate_summary(
+    result: AnalysisResult,
+    *,
+    num_surrogates: int = 10000,
+    rng_seed: int | None = None,
+) -> dict[str, Any]:
+    """Summarizes spatial compactness and component separation against random labels."""
+    if num_surrogates < 1:
+        raise ValueError("num_surrogates must be at least 1.")
+    if result.communities is None:
+        return {
+            "num_surrogates": int(num_surrogates),
+            "has_valid_ensembles": False,
+            "clusters": [],
+            "component_centroid_distance": None,
+        }
+
+    labels = result.communities.labels
+    partition = {i: int(label) for i, label in enumerate(labels)}
+    clusters = ensemble_clusters(partition)
+    valid_clusters = {c_id: members for c_id, members in clusters.items() if len(members) >= 2}
+    rng = np.random.default_rng(rng_seed)
+
+    cluster_rows: list[dict[str, Any]] = []
+    for c_id in sorted(valid_clusters):
+        surrogate_data = prepare_spatial_surrogate_plot_data(
+            result,
+            num_surrogates=num_surrogates,
+            target_cluster=c_id,
+            rng=rng,
+        )
+        random_mean_dists = np.asarray(surrogate_data["target_cluster_random_mean_dists"], dtype=float)
+        actual_mean_dist = surrogate_data["actual_target_mean_dist"]
+        actual_nnd = np.asarray(surrogate_data["actual_NNDs"], dtype=float)
+        surrogate_nnd = np.asarray(surrogate_data["mean_surrogate_NND"], dtype=float)
+
+        cluster_rows.append(
+            {
+                "ensemble_id": int(c_id),
+                "size": int(len(valid_clusters[c_id])),
+                "actual_mean_pairwise_distance": _optional_float(actual_mean_dist),
+                "surrogate_mean_pairwise_distance_mean": _safe_array_mean(random_mean_dists),
+                "surrogate_mean_pairwise_distance_p05": _safe_array_percentile(random_mean_dists, 5),
+                "surrogate_mean_pairwise_distance_p50": _safe_array_percentile(random_mean_dists, 50),
+                "surrogate_mean_pairwise_distance_p95": _safe_array_percentile(random_mean_dists, 95),
+                "p_random_mean_distance_le_actual": (
+                    None
+                    if actual_mean_dist is None or random_mean_dists.size == 0
+                    else float(np.mean(random_mean_dists <= float(actual_mean_dist)))
+                ),
+                "actual_nnd_mean": _safe_array_mean(actual_nnd),
+                "surrogate_nnd_mean": _safe_array_mean(surrogate_nnd),
+                "fraction_actual_nnd_below_surrogate_mean": (
+                    None
+                    if actual_nnd.size == 0 or surrogate_nnd.size == 0
+                    else float(np.mean(actual_nnd < surrogate_nnd))
+                ),
+            }
+        )
+
+    return {
+        "num_surrogates": int(num_surrogates),
+        "has_valid_ensembles": bool(valid_clusters),
+        "clusters": cluster_rows,
+        "component_centroid_distance": _component_centroid_surrogate_summary(
+            result,
+            valid_clusters,
+            num_surrogates=num_surrogates,
+            rng=rng,
+        ),
+    }
+
+
+def _component_centroid_surrogate_summary(
+    result: AnalysisResult,
+    clusters: dict[int, list[int]],
+    *,
+    num_surrogates: int,
+    rng: np.random.Generator,
+) -> dict[str, Any] | None:
+    if len(clusters) < 2:
+        return None
+    coords = np.asarray(result.coords, dtype=float)
+    all_neurons = np.arange(coords.shape[0])
+    cluster_sizes = [len(members) for _, members in sorted(clusters.items())]
+
+    actual_mean, actual_min = _centroid_pairwise_distances(coords, [clusters[c] for c in sorted(clusters)])
+    random_mean_values: list[float] = []
+    random_min_values: list[float] = []
+    for _ in range(num_surrogates):
+        shuffled = rng.permutation(all_neurons)
+        idx = 0
+        random_members = []
+        for size in cluster_sizes:
+            random_members.append(shuffled[idx : idx + size])
+            idx += size
+        mean_dist, min_dist = _centroid_pairwise_distances(coords, random_members)
+        if np.isfinite(mean_dist):
+            random_mean_values.append(mean_dist)
+        if np.isfinite(min_dist):
+            random_min_values.append(min_dist)
+
+    random_mean = np.asarray(random_mean_values, dtype=float)
+    random_min = np.asarray(random_min_values, dtype=float)
+    return {
+        "actual_centroid_pairwise_mean": _optional_float(actual_mean),
+        "surrogate_centroid_pairwise_mean_mean": _safe_array_mean(random_mean),
+        "surrogate_centroid_pairwise_mean_p05": _safe_array_percentile(random_mean, 5),
+        "surrogate_centroid_pairwise_mean_p50": _safe_array_percentile(random_mean, 50),
+        "surrogate_centroid_pairwise_mean_p95": _safe_array_percentile(random_mean, 95),
+        "p_random_centroid_pairwise_mean_ge_actual": (
+            None if random_mean.size == 0 else float(np.mean(random_mean >= actual_mean))
+        ),
+        "percentile_random_centroid_pairwise_mean_le_actual": (
+            None if random_mean.size == 0 else float(np.mean(random_mean <= actual_mean))
+        ),
+        "actual_centroid_pairwise_min": _optional_float(actual_min),
+        "surrogate_centroid_pairwise_min_mean": _safe_array_mean(random_min),
+        "p_random_centroid_pairwise_min_ge_actual": (
+            None if random_min.size == 0 else float(np.mean(random_min >= actual_min))
+        ),
+        "percentile_random_centroid_pairwise_min_le_actual": (
+            None if random_min.size == 0 else float(np.mean(random_min <= actual_min))
+        ),
+    }
+
+
+def _centroid_pairwise_distances(coords: np.ndarray, cluster_members: list[list[int] | np.ndarray]) -> tuple[float, float]:
+    centroids = np.asarray([np.mean(coords[np.asarray(members, dtype=int)], axis=0) for members in cluster_members])
+    if centroids.shape[0] < 2:
+        return float("nan"), float("nan")
+    distances = []
+    for i in range(centroids.shape[0]):
+        for j in range(i + 1, centroids.shape[0]):
+            distances.append(float(np.linalg.norm(centroids[i] - centroids[j])))
+    values = np.asarray(distances, dtype=float)
+    return float(np.mean(values)), float(np.min(values))
+
+
+def _safe_array_mean(values: np.ndarray) -> float | None:
+    finite = values[np.isfinite(values)]
+    return float(np.mean(finite)) if finite.size else None
+
+
+def _safe_array_percentile(values: np.ndarray, percentile: float) -> float | None:
+    finite = values[np.isfinite(values)]
+    return float(np.percentile(finite, percentile)) if finite.size else None
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    value = float(value)
+    return value if np.isfinite(value) else None
+
+
 def plot_osi_results(result: AnalysisResult, output_dir: Path) -> list[Path]:
     """Plots and saves OSI histogram, spatial distribution, preferred orientation, and orientation centers."""
     os.makedirs(output_dir, exist_ok=True)

@@ -10,6 +10,7 @@ from PIL import Image
 from v1_simulation.analysis.types import AnalysisResult, CommunityResult
 from v1_simulation.analysis.plotting import (
     generate_and_save_all_analysis_plots,
+    spatial_surrogate_summary,
     OSI_HISTOGRAM_FILENAME,
     OSI_SPATIAL_FILENAME,
     PREF_ORI_SPATIAL_FILENAME,
@@ -162,3 +163,35 @@ def test_plotting_single_ensemble_boundary(tmp_path: Path) -> None:
     # But for cluster 1 (< 2 members), it should be skipped.
     assert (output_dir / f"{SPATIAL_SURROGATE_PREFIX}2{SPATIAL_SURROGATE_NND_SUFFIX}").exists()
     assert not (output_dir / f"{SPATIAL_SURROGATE_PREFIX}1{SPATIAL_SURROGATE_NND_SUFFIX}").exists()
+
+
+def test_spatial_surrogate_summary_reports_component_distance() -> None:
+    labels = np.array([1, 1, 2, 2], dtype=np.int64)
+    comm = CommunityResult(labels=labels, similarity=np.eye(4))
+    coords = np.array(
+        [
+            [0.0, 0.0],
+            [0.1, 0.0],
+            [1.0, 0.0],
+            [1.1, 0.0],
+        ]
+    )
+    distance = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=2)
+    result = AnalysisResult(
+        status="ok",
+        selected_indices=np.arange(4),
+        osi=np.ones(4),
+        pref_ori=np.zeros(4),
+        responses_mean=np.ones(4),
+        steady_state_responses=np.ones((4, 2, 5)),
+        coords=coords,
+        distance=distance,
+        communities=comm,
+        diagnostics={},
+    )
+
+    summary = spatial_surrogate_summary(result, num_surrogates=5, rng_seed=1)
+
+    assert summary["has_valid_ensembles"] is True
+    assert len(summary["clusters"]) == 2
+    assert summary["component_centroid_distance"]["actual_centroid_pairwise_mean"] == pytest.approx(1.0)

@@ -10,10 +10,15 @@ from scipy import sparse
 
 from v1_simulation.network.state import NetworkState
 from v1_simulation.training.bcm import BCMThetaState, validate_bcm_config
-from v1_simulation.training.plasticity import bcm_training_step, make_bcm_efferent_update_index, make_bcm_row_sum_limits
+from v1_simulation.training.plasticity import (
+    BCMEfferentUpdateIndex,
+    bcm_training_step,
+    make_bcm_efferent_update_index,
+    make_bcm_row_sum_limits,
+)
 
 if TYPE_CHECKING:
-    from v1_simulation.config.schema import TrainingBCMConfig
+    from v1_simulation.config.schema import SolverConfig, TrainingBCMConfig
     from v1_simulation.solvers.base import BatchODEResult
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,12 @@ class BatchTrainingLog:
     aI_mean: float
     aE_max: float
     aI_max: float
+    aE_saturation_fraction: float
+    aI_saturation_fraction: float
+    aE_active_fraction: float
+    aE_active_mean: float
+    aI_active_fraction: float
+    aI_active_mean: float
     conv_aE: float
     conv_aI: float
     steady_state_reached: int
@@ -79,10 +90,16 @@ class BCMTrainer:
             and samples seen.
     """
 
-    def __init__(self, config: TrainingBCMConfig, network: NetworkState) -> None:
+    def __init__(
+        self,
+        config: TrainingBCMConfig,
+        network: NetworkState,
+        *,
+        solver_config: SolverConfig | None = None,
+    ) -> None:
         validate_bcm_config(config, include_loop_fields=True)
         self.config = config
-        self.row_sum_limits = make_bcm_row_sum_limits(network, config)
+        self._jax_updater = None
         # Convert weights to dense once upfront to avoid CSR↔dense round trips
         # every batch during training. Checkpointing converts back to CSR on save.
         if sparse.issparse(network.weights):
@@ -94,7 +111,7 @@ class BCMTrainer:
             )
         else:
             dense_network = network
-        self.state = BCMTrainingState(network=dense_network)
+        self._rate_max = _solver_rate_max(solver_config)
         # Cache the dense topology mask once to avoid CSR→dense conversion
         # and _validate_weights_follow_topology on every batch.
         conn = network.connectivity
@@ -104,10 +121,32 @@ class BCMTrainer:
             dense_network.idx_E,
             dense_network.idx_I,
         )
+        clipped = _clip_initial_efferent_excitatory_weights(
+            dense_network,
+            self._update_index,
+            w_max=config.w_max if bool(config.clip_initial_weights) else None,
+        )
+        if clipped:
+            logger.info("Clipped %d initial BCM-plastic weights to w_max=%s.", clipped, config.w_max)
+        self.row_sum_limits = make_bcm_row_sum_limits(dense_network, config)
+        self.state = BCMTrainingState(network=dense_network)
         self._weight_stats_index = _TrainingWeightStatsIndex(
             ee=_BlockWeightStatsIndex.from_update_index(self._update_index.target_E_source_E),
             ie=_BlockWeightStatsIndex.from_update_index(self._update_index.target_I_source_E),
         )
+        if _should_use_jax_bcm(solver_config):
+            try:
+                from v1_simulation.training.jax_bcm import JAXBCMUpdater
+
+                self._jax_updater = JAXBCMUpdater(
+                    config=config,
+                    row_sum_limits=self.row_sum_limits,
+                    update_index=self._update_index,
+                    dtype=getattr(solver_config.jax, "dtype", "float64") if solver_config is not None else "float64",
+                )
+                self.state.network = self._jax_updater.to_device_network(self.state.network)
+            except RuntimeError as exc:
+                logger.warning("JAX BCM updater unavailable; falling back to NumPy BCM updates: %s", exc)
 
     def train_batch(
         self,
@@ -170,18 +209,27 @@ class BCMTrainer:
             result_updated = 0
         else:
             try:
-                result = bcm_training_step(
-                    network=self.state.network,
-                    x_E=dynamics.exc,
-                    y_E=dynamics.exc,
-                    y_I=dynamics.inh,
-                    theta=self.state.theta,
-                    config=self.config,
-                    row_sum_limits=self.row_sum_limits,
-                    _cached_topology=self._cached_topology,
-                    copy_weights=False,
-                    update_index=self._update_index,
-                )
+                if self._jax_updater is None:
+                    result = bcm_training_step(
+                        network=self.state.network,
+                        x_E=dynamics.exc,
+                        y_E=dynamics.exc,
+                        y_I=dynamics.inh,
+                        theta=self.state.theta,
+                        config=self.config,
+                        row_sum_limits=self.row_sum_limits,
+                        _cached_topology=self._cached_topology,
+                        copy_weights=False,
+                        update_index=self._update_index,
+                    )
+                else:
+                    result = self._jax_updater.training_step(
+                        network=self.state.network,
+                        x_E=dynamics.exc,
+                        y_E=dynamics.exc,
+                        y_I=dynamics.inh,
+                        theta=self.state.theta,
+                    )
                 self.state.consecutive_bad_batches = 0
                 self.state.network = result.network
                 self.state.theta = result.theta
@@ -213,6 +261,11 @@ class BCMTrainer:
 
         aE_max = float(np.nanmax(dynamics.exc)) if dynamics.exc.size else 0.0
         aI_max = float(np.nanmax(dynamics.inh)) if dynamics.inh.size else 0.0
+        aE_sat = _saturation_fraction(dynamics.exc, self._rate_max)
+        aI_sat = _saturation_fraction(dynamics.inh, self._rate_max) if dynamics.inh.size else 0.0
+        active_threshold = float(self.config.active_rate_threshold)
+        aE_active_fraction, aE_active_mean = _active_rate_stats(dynamics.exc, active_threshold)
+        aI_active_fraction, aI_active_mean = _active_rate_stats(dynamics.inh, active_threshold)
 
         summary_start = _optional_index(getattr(dynamics, "summary_start_index", None))
         summary_end = _optional_index(getattr(dynamics, "summary_end_index", None))
@@ -229,6 +282,12 @@ class BCMTrainer:
             aI_mean=float(np.nanmean(dynamics.inh)) if dynamics.inh.size else 0.0,
             aE_max=aE_max,
             aI_max=aI_max,
+            aE_saturation_fraction=aE_sat,
+            aI_saturation_fraction=aI_sat,
+            aE_active_fraction=aE_active_fraction,
+            aE_active_mean=aE_active_mean,
+            aI_active_fraction=aI_active_fraction,
+            aI_active_mean=aI_active_mean,
             conv_aE=float(np.mean(dynamics.exc_convergence)),
             conv_aI=float(np.mean(dynamics.inh_convergence)) if dynamics.inh_convergence.size else 0.0,
             steady_state_reached=int(dynamics.steady_state_reached),
@@ -244,7 +303,11 @@ class BCMTrainer:
             dy_max=float(getattr(dynamics, "dy_max", float("nan"))),
             dy_rms=float(getattr(dynamics, "dy_rms", float("nan"))),
             skipped_bad_batch=skipped,
-            weight_stats=_training_weight_stats(self.state.network, self._weight_stats_index),
+            weight_stats=(
+                self._jax_updater.weight_stats(self.state.network.weights)
+                if self._jax_updater is not None
+                else _training_weight_stats(self.state.network, self._weight_stats_index)
+            ),
             theta_stats=_theta_stats(
                 result.theta_for_update if not skipped else self.state.theta,
                 self.config.theta_floor,
@@ -265,6 +328,21 @@ class BCMTrainer:
         if inh.size and np.any(~np.isfinite(inh)):
             return "NaN or Inf in inhibitory firing rates"
 
+        if bool(getattr(self.config, "require_steady_state", False)) and not bool(dynamics.steady_state_reached):
+            return "steady state was not reached"
+
+        y_diff_threshold = getattr(self.config, "y_diff_max_threshold", None)
+        if y_diff_threshold is not None:
+            y_diff_max = float(getattr(dynamics, "y_diff_max", float("nan")))
+            if np.isfinite(y_diff_max) and y_diff_max > float(y_diff_threshold):
+                return f"y_diff_max {y_diff_max:.3g} exceeds threshold {float(y_diff_threshold):.3g}"
+
+        dy_threshold = getattr(self.config, "dy_max_threshold", None)
+        if dy_threshold is not None:
+            dy_max = float(getattr(dynamics, "dy_max", float("nan")))
+            if np.isfinite(dy_max) and dy_max > float(dy_threshold):
+                return f"dy_max {dy_max:.3g} exceeds threshold {float(dy_threshold):.3g}"
+
         threshold = getattr(self.config, 'rate_explosion_threshold', None)
         if threshold is not None:
             threshold = float(threshold)
@@ -283,17 +361,23 @@ class BCMTrainer:
                         f"threshold {threshold * 2.0:.1f} Hz"
                     )
 
-        # Check saturation fraction (fraction of E neurons near rate_max)
+        # Check saturation fraction (fraction of neurons near rate_max).
         sat_thr = getattr(self.config, 'saturation_fraction_threshold', None)
-        if sat_thr is not None and threshold is not None and exc.size:
-            # Consider neurons "saturated" if they are above 90% of the explosion threshold
-            saturation_level = threshold * 0.9
-            fraction_saturated = float(np.mean(exc > saturation_level))
-            if fraction_saturated > float(sat_thr):
+        if sat_thr is not None and self._rate_max is not None:
+            threshold_fraction = float(sat_thr)
+            e_fraction = _saturation_fraction(exc, self._rate_max)
+            if e_fraction > threshold_fraction:
                 return (
-                    f"{fraction_saturated:.1%} of E neurons above "
-                    f"{saturation_level:.1f} Hz (threshold: {float(sat_thr):.1%})"
+                    f"{e_fraction:.1%} of E neurons near rate_max "
+                    f"{self._rate_max:.1f} Hz (threshold: {threshold_fraction:.1%})"
                 )
+            if inh.size:
+                i_fraction = _saturation_fraction(inh, self._rate_max)
+                if i_fraction > threshold_fraction:
+                    return (
+                        f"{i_fraction:.1%} of I neurons near rate_max "
+                        f"{self._rate_max:.1f} Hz (threshold: {threshold_fraction:.1%})"
+                    )
 
         return None
 
@@ -319,6 +403,26 @@ class _BlockWeightStatsIndex:
 class _TrainingWeightStatsIndex:
     ee: _BlockWeightStatsIndex
     ie: _BlockWeightStatsIndex
+
+
+def _clip_initial_efferent_excitatory_weights(
+    network: NetworkState,
+    index: BCMEfferentUpdateIndex,
+    *,
+    w_max: float | None,
+) -> int:
+    if w_max is None:
+        return 0
+    weights = np.asarray(network.weights, dtype=float)
+    clipped = 0
+    for block in (index.target_E_source_E, index.target_I_source_E):
+        if block.rows.size == 0:
+            continue
+        values = weights[block.rows, block.cols]
+        clipped_values = np.clip(values, 0.0, float(w_max))
+        clipped += int(np.count_nonzero(np.abs(clipped_values - values) > 1.0e-12))
+        weights[block.rows, block.cols] = clipped_values
+    return clipped
 
 
 def _training_weight_stats(
@@ -428,3 +532,45 @@ def _theta_stats(theta: BCMThetaState, theta_floor: float | None) -> dict[str, f
 
 def _optional_index(value: int | None) -> int:
     return -1 if value is None else int(value)
+
+
+def _solver_rate_max(solver_config: SolverConfig | None) -> float | None:
+    if solver_config is None:
+        return None
+    transfer = getattr(solver_config, "transfer", None)
+    rate_max = getattr(transfer, "rate_max", None)
+    if rate_max is None:
+        return None
+    value = float(rate_max)
+    return value if np.isfinite(value) and value > 0.0 else None
+
+
+def _saturation_fraction(values, rate_max: float | None) -> float:
+    if rate_max is None:
+        return 0.0
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return 0.0
+    return float(np.mean(arr >= 0.99 * float(rate_max)))
+
+
+def _active_rate_stats(values, threshold: float) -> tuple[float, float]:
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return 0.0, 0.0
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return 0.0, 0.0
+    active = finite > float(threshold)
+    if not np.any(active):
+        return 0.0, 0.0
+    return float(np.mean(active)), float(np.mean(finite[active]))
+
+
+def _should_use_jax_bcm(solver_config) -> bool:
+    if solver_config is None:
+        return False
+    if getattr(solver_config, "backend", None) not in {"jax-rk4", "diffrax"}:
+        return False
+    jax_cfg = getattr(solver_config, "jax", None)
+    return jax_cfg is not None and not bool(getattr(jax_cfg, "prefer_sparse", True))
